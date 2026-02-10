@@ -61,12 +61,13 @@ No installers are executed.
 
 ## Example
 
-![installer-intel CLI analysis of MSTeamsSetup.exe](img/demo1.gif)
+<img width="1083" height="474" alt="demo1" src="https://github.com/user-attachments/assets/6e4b134b-77c5-47d2-8698-ec7fa378d87a" />
 
 ```powershell
 installer-intel analyze .\setup.exe --out installplan.json
 ```
 
+![demo1](https://github.com/user-attachments/assets/7426fbbf-48f4-4448-80ca-7bc5ff9936ec)
 
 
 CLI summary:
