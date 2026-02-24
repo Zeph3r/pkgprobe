@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Literal, Optional
 
 import typer
 from rich.console import Console
@@ -13,6 +13,9 @@ from pkgprobe import __version__
 from pkgprobe.analyzers import analyze_exe, analyze_msi
 from pkgprobe.banner import show_banner, should_show_banner
 from pkgprobe.models import InstallPlan
+from pkgprobe.trace.bundle import write_pkgtrace
+from pkgprobe.trace.candidates import suggest_silent_attempts
+from pkgprobe.trace.session import TraceSession
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -136,6 +139,103 @@ def schema() -> None:
     from pkgprobe.models import InstallPlan as _InstallPlan
 
     console.print_json(data=_InstallPlan.model_json_schema())
+
+
+@app.command("trace-install")
+def trace_install(
+    installer: Path = typer.Argument(..., help="Path to installer (.msi or .exe)"),
+    bundle_out: Path = typer.Option(
+        ...,
+        "--bundle-out",
+        "-b",
+        help="Output .pkgtrace bundle path.",
+    ),
+    privacy_profile: Literal["community", "team", "enterprise"] = typer.Option(
+        "community",
+        "--privacy-profile",
+        help="Privacy profile for trace bundle metadata.",
+    ),
+    attempts: List[str] = typer.Option(
+        [],
+        "--attempt",
+        "-a",
+        help="Switch string to try (can be passed multiple times). Takes precedence over --try-silent.",
+    ),
+    try_silent: bool = typer.Option(
+        False,
+        "--try-silent",
+        help="Try a set of common silent switches (no interactive attempt). Ignored if --attempt is passed.",
+    ),
+    no_exec: bool = typer.Option(
+        False,
+        "--no-exec",
+        help="Do not execute installer; preflight only for dev/testing.",
+    ),
+) -> None:
+    """
+    Run a trace-install session and write a .pkgtrace bundle.
+
+    Use --attempt to try specific switches, or --try-silent to try common
+    silent switches. Default is a single attempt with no switches.
+    """
+    if attempts:
+        attempt_list: Optional[List[str]] = attempts
+    elif try_silent:
+        attempt_list = suggest_silent_attempts(installer)
+    else:
+        attempt_list = None
+
+    session = TraceSession(
+        installer_path=installer,
+        privacy_profile=privacy_profile,
+        no_exec=no_exec,
+        attempts=attempt_list,
+    )
+    bundle, events = session.run()
+
+    out_path = write_pkgtrace(bundle=bundle, events=events, out_path=bundle_out)
+
+    summary = bundle.summary
+
+    console.print(
+        Panel.fit(
+            f"[bold]trace-install[/bold]\n"
+            f"Installer: {installer}\n"
+            f"Trace ID: {bundle.manifest.trace_id}\n"
+            f"SHA256: {bundle.manifest.installer_sha256}\n"
+            f"Selected attempt: {summary.selected_attempt_index} "
+            f"(score={summary.install_success_score:.2f})",
+            title="Trace Summary",
+        )
+    )
+
+    # Attempt breakdown
+    if summary.attempts:
+        table = Table(title="Attempts", show_lines=True)
+        table.add_column("Index", justify="right")
+        table.add_column("Switch")
+        table.add_column("ExitCode", justify="right")
+        table.add_column("Duration", justify="right")
+        table.add_column("Score", justify="right")
+        table.add_column("Selected", justify="center")
+
+        for idx, attempt in enumerate(summary.attempts):
+            selected = "✓" if idx == summary.selected_attempt_index else ""
+            # Escape quotes so complex switches remain readable
+            raw_switch = attempt.switch_string or ""
+            display_switch = raw_switch.replace('"', r'\"') or '""'
+            duration_s = f"{attempt.duration_ms / 1000.0:.2f}s"
+            table.add_row(
+                str(idx),
+                display_switch,
+                str(attempt.exit_code),
+                duration_s,
+                f"{attempt.success_score:.2f}",
+                selected,
+            )
+        console.print(table)
+
+    console.print(f"[green]Wrote bundle:[/green] {out_path}")
 
 
 if __name__ == "__main__":

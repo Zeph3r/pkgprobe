@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Annotated, Any, Dict, List, Literal, Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class Evidence(BaseModel):
@@ -36,3 +39,141 @@ class InstallPlan(BaseModel):
     detection_rules: List[DetectionRule] = Field(default_factory=list)
 
     notes: List[str] = Field(default_factory=list)
+
+
+Sha256Str = Annotated[str, Field(pattern=r"^[a-fA-F0-9]{64}$")]
+
+
+class InstallerSigner(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject: Optional[str] = None
+    thumbprint: Optional[str] = None
+
+
+class TraceManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str
+    trace_id: UUID
+    installer_sha256: Sha256Str
+    installer_file_name: Optional[str] = None
+    installer_size_bytes: Optional[int] = Field(default=None, ge=0)
+    installer_signer: Optional[InstallerSigner] = None
+    timestamp: datetime
+    os_version: str
+    machine_type: Literal["physical", "vm", "unknown"] = "unknown"
+    privacy_profile: Literal["community", "team", "enterprise"]
+
+
+class TraceAttemptSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt_index: int = Field(ge=0)
+    switch_string: str
+    exit_code: int
+    duration_ms: int = Field(ge=0)
+    ui_detected: Optional[bool] = None
+    success_score: float = Field(ge=0.0, le=1.0)
+
+
+class MsiexecPivot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    detected: Optional[bool] = None
+    msi_sha256: Optional[Sha256Str] = None
+    product_code: Optional[str] = None
+    msiexec_cmd_hash: Optional[Sha256Str] = None
+
+
+class UninstallEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: Optional[str] = None
+    display_version: Optional[str] = None
+    publisher: Optional[str] = None
+    uninstall_string: Optional[str] = None
+    quiet_uninstall_string: Optional[str] = None
+    product_code: Optional[str] = None
+    install_location_hash: Optional[Sha256Str] = None
+
+
+class ServiceAdded(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service_name: Optional[str] = None
+    image_path_hash: Optional[Sha256Str] = None
+    start_type: Optional[str] = None
+
+
+class TaskAdded(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_name: Optional[str] = None
+    action_path_hash: Optional[Sha256Str] = None
+
+
+class FileRoot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    root_type: Literal[
+        "program_files",
+        "program_files_x86",
+        "program_data",
+        "user_profile",
+        "temp",
+        "windows",
+    ]
+    root_path_hash: Optional[Sha256Str] = None
+    exe_hashes: List[Sha256Str] = Field(default_factory=list)
+
+
+class TraceSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempts: List[TraceAttemptSummary] = Field(min_length=1)
+    selected_attempt_index: int = Field(ge=0)
+    install_success_score: float = Field(ge=0.0, le=1.0)
+    msiexec_pivot: Optional[MsiexecPivot] = None
+    uninstall_entries: List[UninstallEntry] = Field(default_factory=list)
+    services_added: List[ServiceAdded] = Field(default_factory=list)
+    tasks_added: List[TaskAdded] = Field(default_factory=list)
+    file_roots: List[FileRoot] = Field(default_factory=list)
+
+
+class TraceEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal[
+        "process_start",
+        "process_exit",
+        "file_write",
+        "reg_write",
+        "service_create",
+        "task_create",
+        "network_connect",
+    ]
+    timestamp: datetime
+
+    pid: Optional[int] = Field(default=None, ge=0)
+    parent_pid: Optional[int] = Field(default=None, ge=0)
+
+    image_hash: Optional[Sha256Str] = None
+    image_path_hash: Optional[Sha256Str] = None
+    command_line_hash: Optional[Sha256Str] = None
+
+    path_hash: Optional[Sha256Str] = None
+    registry_key_hash: Optional[Sha256Str] = None
+    service_name: Optional[str] = None
+    task_name: Optional[str] = None
+
+    dest_ip: Optional[str] = None
+    dest_port: Optional[int] = Field(default=None, ge=0, le=65535)
+    protocol: Optional[Literal["tcp", "udp"]] = None
+
+
+class TraceBundle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    manifest: TraceManifest
+    summary: TraceSummary
