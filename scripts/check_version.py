@@ -10,21 +10,21 @@ import sys
 
 
 def main() -> int:
-    from installer_intel import __version__
+    from pkgprobe import __version__
 
-    print(f"1. installer_intel.__version__ = {__version__!r}")
+    print(f"1. pkgprobe.__version__ = {__version__!r}")
 
     result = subprocess.run(
-        [sys.executable, "-m", "installer_intel.cli", "--version"],
+        [sys.executable, "-m", "pkgprobe.cli", "--version"],
         capture_output=True,
         text=True,
         cwd=None,
     )
     cli_version = result.stdout.strip() if result.returncode == 0 else None
     if result.returncode != 0:
-        print(f"2. installer-intel --version failed: {result.stderr}")
+        print(f"2. pkgprobe --version failed: {result.stderr}")
         return 1
-    print(f"2. installer-intel --version = {cli_version!r}")
+    print(f"2. pkgprobe --version = {cli_version!r}")
 
     if __version__ != cli_version:
         print(f"ERROR: __version__ ({__version__!r}) != CLI output ({cli_version!r})")

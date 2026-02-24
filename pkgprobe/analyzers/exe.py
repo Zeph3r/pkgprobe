@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from installer_intel.models import CommandCandidate, DetectionRule, Evidence, InstallPlan
-from installer_intel.analyzers.signatures import detect_installer_type
+from pkgprobe.models import CommandCandidate, DetectionRule, Evidence, InstallPlan
+from pkgprobe.analyzers.signatures import detect_installer_type
 
 
 def analyze_exe(exe_path: str) -> InstallPlan:

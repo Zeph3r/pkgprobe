@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -11,10 +9,10 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from installer_intel import __version__
-from installer_intel.analyzers import analyze_exe, analyze_msi
-from installer_intel.banner import show_banner, should_show_banner
-from installer_intel.models import InstallPlan
+from pkgprobe import __version__
+from pkgprobe.analyzers import analyze_exe, analyze_msi
+from pkgprobe.banner import show_banner, should_show_banner
+from pkgprobe.models import InstallPlan
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 console = Console()
@@ -27,7 +25,7 @@ def main(
         False,
         "--version",
         "-v",
-        help="Show the installer-intel version and exit.",
+        help="Show the pkgprobe version and exit.",
     ),
 ) -> None:
     """
@@ -35,7 +33,7 @@ def main(
 
     - Handles --version at the top level.
     - Shows the banner only for interactive runs with no subcommand
-      (i.e. `installer-intel`), not for --help/--version.
+      (i.e. `pkgprobe`), not for --help/--version.
     """
     if version_flag:
         console.print(__version__)
@@ -56,7 +54,7 @@ def _write_json(plan: InstallPlan, out_path: Path) -> None:
 
 
 def _print_summary(plan: InstallPlan) -> None:
-    console.print(Panel.fit(f"[bold]installer-intel[/bold]\n{plan.input_path}", title="Analyze Result"))
+    console.print(Panel.fit(f"[bold]pkgprobe[/bold]\n{plan.input_path}", title="Analyze Result"))
 
     console.print(f"[bold]Type:[/bold] {plan.installer_type}  (confidence {plan.confidence:.2f})")
     console.print(f"[bold]File:[/bold] {plan.file_type}")
@@ -102,7 +100,7 @@ def _print_summary(plan: InstallPlan) -> None:
 def analyze(
     path: Path = typer.Argument(..., help="Path to installer (.msi or .exe)"),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="Output JSON path (default: ./installplan.json)"),
-    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress banner and progress bars"),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress banner (for scripting and CI)"),
 ) -> None:
     # Banner before any analysis output (interactive runs only):
     # - not quiet
@@ -135,7 +133,7 @@ def schema() -> None:
     """
     Print the JSON schema for the InstallPlan model.
     """
-    from installer_intel.models import InstallPlan as _InstallPlan
+    from pkgprobe.models import InstallPlan as _InstallPlan
 
     console.print_json(data=_InstallPlan.model_json_schema())
 

@@ -1,17 +1,29 @@
+<<<<<<< Updated upstream
 # installer-intel
+=======
+# pkgprobe 🔍
+>>>>>>> Stashed changes
 
-**installer-intel** is a Windows-first CLI tool that statically analyzes
+**pkgprobe** is a Windows-first CLI tool that statically analyzes
 EXE and MSI installers and produces a **machine-readable install plan**
 for endpoint management and packaging workflows.
 
 Think: *package intelligence* for Intune, SCCM, Jamf, RMM, and
 Client Platform Engineering teams.
 
+<<<<<<< Updated upstream
 Available on PyPI: https://pypi.org/project/installer-intel/
+=======
+Available on [PyPI](https://pypi.org/project/pkgprobe/).
+>>>>>>> Stashed changes
 
 ---
 
+<<<<<<< Updated upstream
 ## Why installer-intel exists
+=======
+## ✨ Why pkgprobe exists
+>>>>>>> Stashed changes
 
 Packaging software on Windows is still more art than science:
 
@@ -20,7 +32,11 @@ Packaging software on Windows is still more art than science:
 - Detection rules are often copied, guessed, or discovered via trial-and-error
 - Testing installers directly is slow and risky on production machines
 
+<<<<<<< Updated upstream
 **installer-intel** focuses on the analysis phase first.
+=======
+**pkgprobe** focuses on the *analysis* phase first:
+>>>>>>> Stashed changes
 
 > Understand what an installer is likely to do — *before* you ever run it.
 
@@ -28,8 +44,13 @@ Packaging software on Windows is still more art than science:
 
 ## What it does (v0.1)
 
+<<<<<<< Updated upstream
 Given an `.msi` or `.exe`, installer-intel outputs a structured
 **install plan** suitable for automation and review.
+=======
+Given an `.msi` or `.exe`, pkgprobe outputs a structured
+**install plan** containing:
+>>>>>>> Stashed changes
 
 ### Installer intelligence
 
@@ -61,10 +82,15 @@ No installers are executed.
 
 ## Example
 
+<<<<<<< Updated upstream
 <img width="1083" height="474" alt="demo1" src="https://github.com/user-attachments/assets/6e4b134b-77c5-47d2-8698-ec7fa378d87a" />
 
 ```powershell
 installer-intel analyze .\setup.exe --out installplan.json
+=======
+``` powershell
+pkgprobe analyze .\setup.exe --out installplan.json
+>>>>>>> Stashed changes
 ```
 
 ![demo1](https://github.com/user-attachments/assets/7426fbbf-48f4-4448-80ca-7bc5ff9936ec)
@@ -104,10 +130,17 @@ Generated `installplan.json` (excerpt):
 
 ### From PyPI (recommended)
 
+<<<<<<< Updated upstream
 ```powershell
 pip install installer-intel
 installer-intel --version
 installer-intel analyze .\setup.exe --out installplan.json
+=======
+``` powershell
+pip install pkgprobe
+pkgprobe --version
+pkgprobe analyze .\setup.exe --out installplan.json
+>>>>>>> Stashed changes
 ```
 
 ### From source (development)
@@ -116,11 +149,11 @@ This project uses **uv** for fast, reproducible Python environments.
 
 ```powershell
 pip install uv
-git clone https://github.com/Zeph3r/installer-intel.git
-cd installer-intel
+git clone https://github.com/Zeph3r/pkgprobe.git
+cd pkgprobe
 uv venv
 uv sync
-uv run installer-intel --help
+uv run pkgprobe --help
 ```
 
 Use `--quiet` / `-q` to suppress the banner when scripting (CI, pipelines, etc.).
@@ -139,7 +172,7 @@ Use `--quiet` / `-q` to suppress the banner when scripting (CI, pipelines, etc.)
 
 ## How detection works
 
-installer-intel combines:
+pkgprobe combines:
 
 - Static string extraction (ASCII + UTF-16LE)
 - Known installer signature patterns
@@ -161,8 +194,9 @@ This keeps analysis **fast, safe, and explainable**.
 
 ## Roadmap
 
-Planned enhancements:
+### v0.2.0 (next)
 
+<<<<<<< Updated upstream
 - [x] MSI parsing via Windows Installer COM (ProductCode, UpgradeCode, Version)
 - [ ] install4j / Java-based installer detection
 - [ ] Partial-read scanning for very large EXEs
@@ -170,6 +204,25 @@ Planned enhancements:
 - [ ] `--format yaml`
 - [ ] `--summary-only`
 - [ ] Optional sandboxed execution mode (opt-in)
+=======
+**CLI UX**
+
+-   **JSON to stdout** – Support `pkgprobe analyze <file> --format json` (or `-o -`) so scripts can consume JSON only from stdout without writing a file.
+-   **--summary-only** – Option to print only the human summary (no JSON file, no "Wrote: ..."); useful for quick terminal checks.
+-   **Exit codes** – Document and standardize exit codes (e.g. 0 = success, 1 = usage, 2 = file/analysis error) for scripting.
+-   **Subcommand examples** – Add a one-line example in `pkgprobe analyze --help` so first-time users see usage immediately.
+
+**Output & format**
+
+-   **--format yaml** – Optional YAML output for install plan (alongside JSON).
+
+**Later (v0.3.0+)**
+
+-   install4j / Java-based installer detection
+-   Partial-read scanning for very large EXEs
+-   ProcMon-backed trace mode
+-   Optional trace-install mode (opt-in, sandboxed)
+>>>>>>> Stashed changes
 
 ---
 
@@ -193,7 +246,11 @@ It prefers:
 - Confidence scoring over certainty
 - Safety over speed
 
+<<<<<<< Updated upstream
 If it can’t be confident, it tells you *why*.
+=======
+pkgprobe is intentionally **conservative**.
+>>>>>>> Stashed changes
 
 That’s how real platform tooling should behave.
 

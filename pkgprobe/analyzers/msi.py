@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Dict, Optional, Tuple
 
-from installer_intel.models import CommandCandidate, DetectionRule, Evidence, InstallPlan
+from pkgprobe.models import CommandCandidate, DetectionRule, Evidence, InstallPlan
 
 
 def _read_msi_property(msi_path: str, prop: str) -> Optional[str]:
