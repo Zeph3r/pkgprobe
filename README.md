@@ -1,4 +1,4 @@
-<img width="713" height="531" alt="image" src="https://github.com/user-attachments/assets/e2944351-0bb1-4ac6-b2c7-e7643231b9f2" />
+<img width="300" height="100" alt="image" src="https://github.com/user-attachments/assets/e2944351-0bb1-4ac6-b2c7-e7643231b9f2" />
 
 
 **pkgprobe** is a Windows-first CLI tool that statically analyzes EXE
