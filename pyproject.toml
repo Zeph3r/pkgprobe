@@ -12,6 +12,12 @@ dependencies = [
   "pydantic>=2.7.4",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0.0",
+  "jsonschema>=4.0.0",
+]
+
 [project.scripts]
 pkgprobe = "pkgprobe.cli:app"
 

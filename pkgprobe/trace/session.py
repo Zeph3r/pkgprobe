@@ -487,18 +487,23 @@ class TraceSession:
             privacy_profile=self.privacy_profile,
         )
 
-        # No-exec mode: synthetic single attempt, no behavior.
+        # No-exec mode: skip execution but honor multi-attempt list so that
+        # --try-silent (and explicit --attempt) are visible in dry-run output.
         if self.no_exec:
-            attempt = TraceAttemptSummary(
-                attempt_index=0,
-                switch_string="",
-                exit_code=0,
-                duration_ms=0,
-                ui_detected=False,
-                success_score=0.0,
-            )
+            no_exec_attempts: list[TraceAttemptSummary] = []
+            for idx, switch in enumerate(self.attempts):
+                no_exec_attempts.append(
+                    TraceAttemptSummary(
+                        attempt_index=idx,
+                        switch_string=switch,
+                        exit_code=0,
+                        duration_ms=0,
+                        ui_detected=False,
+                        success_score=0.0,
+                    )
+                )
             summary = TraceSummary(
-                attempts=[attempt],
+                attempts=no_exec_attempts,
                 selected_attempt_index=0,
                 install_success_score=0.0,
                 msiexec_pivot=None,

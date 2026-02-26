@@ -181,7 +181,7 @@ def trace_install(
     if attempts:
         attempt_list: Optional[List[str]] = attempts
     elif try_silent:
-        attempt_list = suggest_silent_attempts(installer)
+        attempt_list = [c.switch for c in suggest_silent_attempts(installer)]
     else:
         attempt_list = None
 
@@ -197,17 +197,17 @@ def trace_install(
 
     summary = bundle.summary
 
-    console.print(
-        Panel.fit(
-            f"[bold]trace-install[/bold]\n"
-            f"Installer: {installer}\n"
-            f"Trace ID: {bundle.manifest.trace_id}\n"
-            f"SHA256: {bundle.manifest.installer_sha256}\n"
-            f"Selected attempt: {summary.selected_attempt_index} "
-            f"(score={summary.install_success_score:.2f})",
-            title="Trace Summary",
-        )
+    panel_lines = (
+        f"[bold]trace-install[/bold]\n"
+        f"Installer: {installer}\n"
+        f"Trace ID: {bundle.manifest.trace_id}\n"
+        f"SHA256: {bundle.manifest.installer_sha256}\n"
+        f"Selected attempt: {summary.selected_attempt_index} "
+        f"(score={summary.install_success_score:.2f})"
     )
+    if no_exec:
+        panel_lines += "\n[dim]Execution disabled (--no-exec); no installer was run.[/dim]"
+    console.print(Panel.fit(panel_lines, title="Trace Summary"))
 
     # Attempt breakdown
     if summary.attempts:
