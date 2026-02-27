@@ -52,24 +52,18 @@ def show_banner(version: Optional[str] = None) -> None:
 
     console = Console()
 
-    # Each row is (white_segment, orange_segment).
-    # White lines are padded to a fixed width (20 chars) so orange always
-    # starts at the same column regardless of Rich's internal cursor tracking.
-    WHITE_WIDTH = 20
-
     logo_rows = [
-        ("        _           ", "                         _          "),
-        ("  _ __ | | ____ _   ", " _ __  _ __ ___ | |__   ___ "),
-        (" | '_ \\| |/ / _` |  ", "| '_ \\| '__/ _ \\| '_ \\ / _ \\"),
-        (" | |_) |   < (_| |  ", "| |_) | | | (_) | |_) |  __/"),
-        (" | .__/|_|\\_\\__, |  ", "| .__/|_|  \\___/|_.__/ \\___/"),
-        (" |_|        |___/   ", "|_|                         "),
+        " ██████╗ ██╗  ██╗ ██████╗ ██████╗ ██████╗  ██████╗ ██████╗ ███████╗",
+        " ██╔══██╗██║ ██╔╝██╔════╝ ██╔══██╗██╔══██╗██╔═══██╗██╔══██╗██╔════╝",
+        " ██████╔╝█████╔╝ ██║  ███╗██████╔╝██████╔╝██║   ██║██████╔╝█████╗  ",
+        " ██╔═══╝ ██╔═██╗ ██║   ██║██╔═══╝ ██╔══██╗██║   ██║██╔══██╗██╔══╝  ",
+        " ██║     ██║  ██╗╚██████╔╝██║     ██║  ██║╚██████╔╝██████╔╝███████╗",
+        " ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝",
     ]
 
-    for white_seg, orange_seg in logo_rows:
+    for row in logo_rows:
         line = Text()
-        line.append(white_seg.ljust(WHITE_WIDTH), style="white")
-        line.append(orange_seg, style="#FF8C00")
+        line.append(row, style="#f97316")
         console.print(line)
 
     console.print()
@@ -77,12 +71,12 @@ def show_banner(version: Optional[str] = None) -> None:
     # Tagline
     console.print(
         "Package Intelligence for Windows Installers",
-        style="white dim",
+        style="#f97316",
     )
     console.print()
 
     # Version and GitHub
-    console.print(f"  v{version}", style="dim")
-    console.print("  @Zeph3r on GitHub", style="dim")
-    console.print("  https://pkgprobe.io", style="dim")
+    console.print(f"  v{version}", style="#f97316")
+    console.print("  @Zeph3r on GitHub", style="#f97316")
+    console.print("  https://pkgprobe.io", style="#f97316")
     console.print()
