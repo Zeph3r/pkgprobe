@@ -10,6 +10,8 @@ Platform Engineering teams.
 
 Available on [PyPI](https://pypi.org/project/pkgprobe/).
 
+**[Full usage documentation](docs/USAGE.md)** — Commands, options, output formats, and trace-install behavior.
+
 ------------------------------------------------------------------------
 
 ## ✨ Why pkgprobe exists

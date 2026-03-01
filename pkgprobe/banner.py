@@ -77,6 +77,9 @@ def show_banner(version: Optional[str] = None) -> None:
 
     # Version and GitHub
     console.print(f"  v{version}", style="#f97316")
-    console.print("  @Zeph3r on GitHub", style="#f97316")
+    console.print(
+        "  @Zeph3r on [link=https://github.com/Zeph3r/pkgprobe]GitHub[/link]",
+        style="#f97316",
+    )
     console.print("  https://pkgprobe.io", style="#f97316")
     console.print()
