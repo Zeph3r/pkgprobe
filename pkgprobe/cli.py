@@ -213,7 +213,7 @@ def trace_install(
     if attempts:
         attempt_list: Optional[List[str]] = attempts
     elif try_silent:
-        attempt_list = [c.switch for c in suggest_silent_attempts(installer)]
+        attempt_list = suggest_silent_attempts(installer)
     else:
         attempt_list = None
 

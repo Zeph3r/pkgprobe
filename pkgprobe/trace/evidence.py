@@ -14,6 +14,10 @@ InstallerFamily = Literal["msi", "exe"]
 
 # How much of the file to read for signature scan (bytes)
 READ_HEAD_SIZE = 512 * 1024
+# Max file size to read fully when head has no subtype (avoids reading huge binaries)
+READ_FULL_MAX_SIZE = 8 * 1024 * 1024
+# Tail chunk size when file is large and we don't read full file
+READ_TAIL_SIZE = 512 * 1024
 
 
 def read_head(path: Path, size: int = READ_HEAD_SIZE) -> bytes:
@@ -21,6 +25,20 @@ def read_head(path: Path, size: int = READ_HEAD_SIZE) -> bytes:
     try:
         with path.open("rb") as f:
             return f.read(size)
+    except OSError:
+        return b""
+
+
+def read_tail(path: Path, size: int = READ_TAIL_SIZE) -> bytes:
+    """Read the last size bytes of path. Returns empty bytes on any error or if file is smaller than size."""
+    try:
+        st = path.stat()
+        if st.st_size <= size:
+            with path.open("rb") as f:
+                return f.read()
+        with path.open("rb") as f:
+            f.seek(-size, 2)
+            return f.read()
     except OSError:
         return b""
 

@@ -2,7 +2,7 @@
 Candidate silent-switch suggestion for trace-install.
 
 Public facade over evidence → subtype → switch_policy → scorer.
-TraceSession receives list[str]; CLI maps SwitchCandidate.switch for that.
+detect_installer_family() returns msi|exe; suggest_silent_attempts() returns list[str].
 """
 
 from __future__ import annotations

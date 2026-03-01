@@ -1,7 +1,8 @@
 """
-Mapping from subtype (and filename evidence) to weighted switch candidates.
+Mapping from family/subtype to weighted switch candidates.
 
-Each candidate has switch, weight, and reason for traceability and sorting.
+Uses internal weighted inference: base_weight + evidence (subtype, filename).
+Scores normalized 0-1, sorted descending; returns list of switch strings.
 """
 
 from __future__ import annotations
@@ -11,86 +12,119 @@ from pathlib import Path
 from typing import Literal
 
 from pkgprobe.trace.evidence import has_filename_token
+from pkgprobe.trace.weighting import DetectionEvidence, _WeightedSwitchCandidate
 
 
 @dataclass(frozen=True)
 class SwitchCandidate:
-    """A single silent-switch suggestion with weight and reasoning."""
+    """Public: single silent-switch suggestion (weight/reason for future CLI display)."""
     switch: str
     weight: float
     reason: str
 
+# Base weights per policy (deterministic)
+_MSI_BASE: list[tuple[str, float]] = [
+    ("/qn", 0.8),
+    ("/quiet", 0.7),
+    ("/passive", 0.6),
+]
+_NSIS_BASE: list[tuple[str, float]] = [
+    ("/S", 0.75),
+    ("/silent", 0.5),
+    ("/quiet", 0.4),
+    ("/qn", 0.3),
+    ("/VERYSILENT", 0.2),
+]
+_INNO_BASE: list[tuple[str, float]] = [
+    ("/VERYSILENT", 0.75),
+    ("/SILENT", 0.7),
+    ("/silent", 0.5),
+    ("/quiet", 0.4),
+    ("/S", 0.3),
+]
+_INSTALLSHIELD_BASE: list[tuple[str, float]] = [
+    ("/quiet", 0.75),
+    ("/s", 0.7),
+    ("/S", 0.5),
+    ("/silent", 0.4),
+    ("/qn", 0.3),
+    ("/VERYSILENT", 0.2),
+]
+_GENERIC_EXE_BASE: list[tuple[str, float]] = [
+    ("/S", 0.6),
+    ("/silent", 0.5),
+    ("/quiet", 0.45),
+    ("/qn", 0.3),
+    ("/VERYSILENT", 0.2),
+]
 
-# Subtype-specific weighted lists: (switch, weight, reason)
-_NSIS: list[tuple[str, float, str]] = [
-    ("/S", 0.95, "nsis_primary"),
-    ("/silent", 0.6, "nsis_fallback"),
-    ("/quiet", 0.5, "nsis_fallback"),
-    ("/qn", 0.4, "nsis_fallback"),
-    ("/VERYSILENT", 0.35, "nsis_fallback"),
-]
-_INNO: list[tuple[str, float, str]] = [
-    ("/VERYSILENT", 0.95, "inno_primary"),
-    ("/SILENT", 0.85, "inno_primary"),
-    ("/silent", 0.6, "inno_fallback"),
-    ("/quiet", 0.5, "inno_fallback"),
-    ("/S", 0.4, "inno_fallback"),
-]
-_INSTALLSHIELD: list[tuple[str, float, str]] = [
-    ("/quiet", 0.9, "installshield_primary"),
-    ("/s", 0.8, "installshield_primary"),
-    ("/S", 0.6, "installshield_fallback"),
-    ("/silent", 0.5, "installshield_fallback"),
-    ("/qn", 0.4, "installshield_fallback"),
-    ("/VERYSILENT", 0.35, "installshield_fallback"),
-]
-_MSI: list[tuple[str, float, str]] = [
-    ("/qn", 0.95, "msi_primary"),
-    ("/quiet", 0.9, "msi_primary"),
-    ("/passive", 0.7, "msi_fallback"),
-]
-_GENERIC_EXE: list[tuple[str, float, str]] = [
-    ("/S", 0.85, "generic_primary"),
-    ("/silent", 0.6, "generic_fallback"),
-    ("/quiet", 0.5, "generic_fallback"),
-    ("/qn", 0.4, "generic_fallback"),
-    ("/VERYSILENT", 0.35, "generic_fallback"),
-]
+# Subtype boost: add evidence to primary switch only (weight = subtype_confidence * 0.2)
+_SUBTYPE_PRIMARY_SWITCH: dict[str, str] = {
+    "nsis": "/S",
+    "inno": "/VERYSILENT",
+    "installshield": "/quiet",
+}
+_SUBTYPE_BOOST_FACTOR = 0.2
 
 
-def _to_candidates(items: list[tuple[str, float, str]]) -> list[SwitchCandidate]:
-    return [SwitchCandidate(s, w, r) for s, w, r in items]
+def _build_candidates(
+    base_list: list[tuple[str, float]],
+    path: Path,
+    exe_subtype: Literal["nsis", "inno", "installshield"] | None,
+    exe_subtype_confidence: float,
+) -> list[_WeightedSwitchCandidate]:
+    """Build weighted candidates with evidence; subtype and filename boosts applied."""
+    candidates: list[_WeightedSwitchCandidate] = []
+    for switch, base_weight in base_list:
+        evidence: list[DetectionEvidence] = []
+
+        if exe_subtype and exe_subtype_confidence > 0 and _SUBTYPE_PRIMARY_SWITCH.get(exe_subtype) == switch:
+            evidence.append(
+                DetectionEvidence(source="subtype", value=exe_subtype, weight=exe_subtype_confidence * _SUBTYPE_BOOST_FACTOR)
+            )
+
+        if switch == "/quiet" and has_filename_token(path, "bootstrapper"):
+            evidence.append(DetectionEvidence(source="filename", value="bootstrapper", weight=0.15))
+
+        candidates.append(_WeightedSwitchCandidate(switch=switch, base_weight=base_weight, evidence=evidence))
+    return candidates
+
+
+def _normalize_scores(candidates: list[_WeightedSwitchCandidate]) -> list[_WeightedSwitchCandidate]:
+    """Min-max normalize scores to 0.0-1.0. In place we don't mutate; return new list with normalized scores stored for sort."""
+    if not candidates:
+        return []
+    raw_scores = [c.score() for c in candidates]
+    lo, hi = min(raw_scores), max(raw_scores)
+    if hi <= lo:
+        return candidates
+    # Keep same order, just use normalized score for sorting; we sort by score desc
+    scored = [(c, (c.score() - lo) / (hi - lo)) for c in candidates]
+    scored.sort(key=lambda x: -x[1])
+    return [x[0] for x in scored]
 
 
 def get_weighted_candidates(
     family: Literal["msi", "exe"],
     path: Path,
     exe_subtype: Literal["nsis", "inno", "installshield"] | None,
-    exe_subtype_score: float,
-) -> list[SwitchCandidate]:
+    exe_subtype_confidence: float,
+) -> list[str]:
     """
-    Return weighted switch candidates for the given family and (for exe) subtype.
-
-    Filename evidence (e.g. bootstrapper) can boost /quiet. Results are not
-    sorted here; scorer sorts by weight.
+    Build weighted candidates, score, normalize to 0-1, sort descending by score.
+    Returns list of switch strings for backward-compatible API.
     """
     if family == "msi":
-        return _to_candidates(_MSI)
-
-    if exe_subtype == "nsis":
-        candidates = _to_candidates(_NSIS)
+        base_list = _MSI_BASE
+    elif exe_subtype == "nsis":
+        base_list = _NSIS_BASE
     elif exe_subtype == "inno":
-        candidates = _to_candidates(_INNO)
+        base_list = _INNO_BASE
     elif exe_subtype == "installshield":
-        candidates = _to_candidates(_INSTALLSHIELD)
+        base_list = _INSTALLSHIELD_BASE
     else:
-        candidates = _to_candidates(_GENERIC_EXE)
+        base_list = _GENERIC_EXE_BASE
 
-    # Bootstrapper-style installers often respect /quiet: boost its weight
-    if has_filename_token(path, "bootstrapper"):
-        candidates = [
-            SwitchCandidate(c.switch, c.weight + 0.15 if c.switch == "/quiet" else 0.0, c.reason)
-            if c.switch == "/quiet" else c
-            for c in candidates
-        ]
-    return candidates
+    candidates = _build_candidates(base_list, path, exe_subtype, exe_subtype_confidence)
+    ordered = _normalize_scores(candidates)
+    return [c.switch for c in ordered]
