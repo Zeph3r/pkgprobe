@@ -25,6 +25,18 @@ class DetectionRule(BaseModel):
     evidence: List[Evidence] = Field(default_factory=list)
 
 
+class CveResult(BaseModel):
+    """Single CVE record from NVD; match_type and match_confidence optional for backward compat."""
+    cve_id: str
+    summary: str = ""
+    cvss_score: Optional[float] = None
+    cvss_severity: Optional[str] = None
+    published: Optional[str] = None
+    url: str = ""
+    match_type: Optional[Literal["cpe", "keyword"]] = None
+    match_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
 class InstallPlan(BaseModel):
     input_path: str
     file_type: str  # "msi" | "exe" | "unknown"
@@ -39,6 +51,9 @@ class InstallPlan(BaseModel):
     detection_rules: List[DetectionRule] = Field(default_factory=list)
 
     notes: List[str] = Field(default_factory=list)
+
+    cve_results: List[CveResult] = Field(default_factory=list)
+    cve_check_message: Optional[str] = None  # Set when skipped or NVD unavailable
 
 
 Sha256Str = Annotated[str, Field(pattern=r"^[a-fA-F0-9]{64}$")]

@@ -81,7 +81,7 @@ Statically analyzes an MSI or EXE installer and produces an **InstallPlan**: ins
 **Usage:**
 
 ```text
-pkgprobe analyze PATH [--out PATH] [--quiet]
+pkgprobe analyze PATH [--out PATH] [--quiet] [--cve-check]
 ```
 
 **Arguments**
@@ -96,11 +96,13 @@ pkgprobe analyze PATH [--out PATH] [--quiet]
 |--------|-------|---------|-------------|
 | `--out` | `-o` | `./installplan.json` | Path where the InstallPlan JSON is written. |
 | `--quiet` | `-q` | `false` | Suppress banner (for CI and scripting). |
+| `--cve-check` | — | `false` | Query NVD (NIST) for known CVEs affecting the identified product. Best-effort; requires product metadata. Uses NVD API v2. |
 
 **Behavior**
 
 - **MSI:** Reads Property table (ProductCode, UpgradeCode, ProductVersion, ProductName, Manufacturer) via Windows Installer APIs. Produces high-confidence install (`msiexec /i ... /qn`) and uninstall (`msiexec /x {ProductCode} /qn`) candidates and MSI ProductCode detection rules.
 - **EXE:** Uses signature-based heuristics (Inno Setup, NSIS, InstallShield, Burn, etc.) and returns installer type, confidence, and heuristic install/uninstall commands. No execution.
+- **CVE check (optional):** With `--cve-check`, queries NVD API v2 (keyword-first for MSI, CPE fallback when all of Manufacturer, ProductName, ProductVersion exist and keyword is low-confidence). EXE: keyword only when ProductName metadata exists; otherwise skipped. Results are cached under `~/.pkgprobe/cache/cve/` for 24 hours. Up to 20 CVEs, sorted by CVSS and publish date. Optional `NVD_API_KEY` env improves rate limits.
 
 **Output**
 

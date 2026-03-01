@@ -12,6 +12,7 @@ from rich.table import Table
 from pkgprobe import __version__
 from pkgprobe.analyzers import analyze_exe, analyze_msi
 from pkgprobe.banner import show_banner, should_show_banner
+from pkgprobe.enrichment import enrich_with_cves
 from pkgprobe.models import InstallPlan
 from pkgprobe.trace.bundle import write_pkgtrace
 from pkgprobe.trace.candidates import suggest_silent_attempts
@@ -56,7 +57,7 @@ def _write_json(plan: InstallPlan, out_path: Path) -> None:
     out_path.write_text(plan.model_dump_json(indent=2), encoding="utf-8")
 
 
-def _print_summary(plan: InstallPlan) -> None:
+def _print_summary(plan: InstallPlan, cve_check_requested: bool = False) -> None:
     console.print(Panel.fit(f"[bold]pkgprobe[/bold]\n{plan.input_path}", title="Analyze Result"))
 
     console.print(f"[bold]Type:[/bold] {plan.installer_type}  (confidence {plan.confidence:.2f})")
@@ -98,12 +99,40 @@ def _print_summary(plan: InstallPlan) -> None:
     if plan.notes:
         console.print(Panel("\n".join(f"- {n}" for n in plan.notes), title="Notes"))
 
+    if cve_check_requested:
+        if getattr(plan, "cve_check_message", None):
+            console.print(plan.cve_check_message)
+        elif getattr(plan, "cve_results", None) and len(plan.cve_results) > 0:
+            console.print("[bold]=== Known CVEs (best-effort) ===[/bold]")
+            for r in plan.cve_results:
+                cvss = ""
+                if r.cvss_score is not None or r.cvss_severity:
+                    cvss = f" {r.cvss_score or 'N/A'}"
+                    if r.cvss_severity:
+                        cvss += f" ({r.cvss_severity})"
+                match = f" [{r.match_type or '?'}]" if getattr(r, "match_type", None) else ""
+                summary = (r.summary or "")[:120]
+                if len(r.summary or "") > 120:
+                    summary += "..."
+                console.print(f"  [bold]{r.cve_id}[/bold]{cvss}{match}")
+                console.print(f"    {summary}")
+                console.print(f"    [link={r.url}]{r.url}[/link]")
+            if len(plan.cve_results) >= 20:
+                console.print("Showing first 20 results.")
+        else:
+            console.print("CVE check: no matching results.")
+
 
 @app.command()
 def analyze(
     path: Path = typer.Argument(..., help="Path to installer (.msi or .exe)"),
     out: Optional[Path] = typer.Option(None, "--out", "-o", help="Output JSON path (default: ./installplan.json)"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Suppress banner (for scripting and CI)"),
+    cve_check: bool = typer.Option(
+        False,
+        "--cve-check",
+        help="Query NVD (NIST) for known CVEs affecting the identified product. Best-effort; requires product metadata. Uses NVD API v2.",
+    ),
 ) -> None:
     # Banner before any analysis output (interactive runs only):
     # - not quiet
@@ -125,9 +154,12 @@ def analyze(
     else:
         raise typer.BadParameter("Unsupported file type. Provide a .msi or .exe")
 
+    if cve_check:
+        plan = enrich_with_cves(plan, on_warning=lambda msg: console.print(f"[yellow]{msg}[/yellow]"))
+
     out_path = out or Path("installplan.json")
     _write_json(plan, out_path)
-    _print_summary(plan)
+    _print_summary(plan, cve_check_requested=cve_check)
     console.print(f"[green]Wrote:[/green] {out_path.resolve()}")
 
 
