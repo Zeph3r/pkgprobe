@@ -5,46 +5,91 @@ from typing import Dict, Optional, Tuple
 
 from pkgprobe.models import CommandCandidate, DetectionRule, Evidence, InstallPlan
 
+# Keys we read from MSI Property table when _msi is available
+_MSI_PROPERTY_KEYS = ("ProductName", "ProductCode", "UpgradeCode", "ProductVersion", "Manufacturer")
 
-def _read_msi_property(msi_path: str, prop: str) -> Optional[str]:
-    """
-    Read an MSI property from the Property table via Windows-only _msi module.
-    """
+
+def _file_size_str(msi_path: str) -> Optional[str]:
+    """Return file size as string, or None if unreadable."""
     try:
-        import _msi  # type: ignore
-    except Exception:
+        return str(os.path.getsize(msi_path)) if os.path.exists(msi_path) else None
+    except OSError:
         return None
+
+
+def _msi_module_available() -> bool:
+    """True if Python's _msi module can be imported (CPython on Windows)."""
+    try:
+        import _msi  # type: ignore  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def _read_msi_properties(msi_path: str) -> Tuple[Dict[str, Optional[str]], bool]:
+    """
+    Read MSI Property table via _msi. Call only when _msi_module_available() is True.
+    Returns (dict of property name -> value, read_failed).
+    read_failed is True if OpenDatabase or any view raised an exception.
+    """
+    import _msi  # type: ignore
+
+    result: Dict[str, Optional[str]] = {k: None for k in _MSI_PROPERTY_KEYS}
+    read_failed = False
 
     if not os.path.exists(msi_path):
-        return None
+        return result, True
 
     try:
         db = _msi.OpenDatabase(msi_path, _msi.MSIDBOPEN_READONLY)
-        view = db.OpenView(f"SELECT `Value` FROM `Property` WHERE `Property`='{prop}'")
-        view.Execute(None)
-        rec = view.Fetch()
-        view.Close()
-        if rec is None:
-            return None
-        return rec.GetString(1)
     except Exception:
-        return None
+        return result, True
+
+    for prop in _MSI_PROPERTY_KEYS:
+        try:
+            view = db.OpenView(f"SELECT `Value` FROM `Property` WHERE `Property`='{prop}'")
+            view.Execute(None)
+            rec = view.Fetch()
+            view.Close()
+            if rec is not None:
+                result[prop] = rec.GetString(1)
+        except Exception:
+            read_failed = True
+            result[prop] = None
+
+    return result, read_failed
 
 
 def analyze_msi(msi_path: str) -> InstallPlan:
-    product_code = _read_msi_property(msi_path, "ProductCode")
-    upgrade_code = _read_msi_property(msi_path, "UpgradeCode")
-    product_version = _read_msi_property(msi_path, "ProductVersion")
-    manufacturer = _read_msi_property(msi_path, "Manufacturer")
-    product_name = _read_msi_property(msi_path, "ProductName")
+    msi_module_available = _msi_module_available()
 
-    meta: Dict[str, Optional[str]] = {
-        "ProductName": product_name,
-        "ProductCode": product_code,
-        "UpgradeCode": upgrade_code,
-        "ProductVersion": product_version,
-        "Manufacturer": manufacturer,
-    }
+    if not msi_module_available:
+        meta: Dict[str, Optional[str]] = {
+            "FileName": os.path.basename(msi_path),
+            "SizeBytes": _file_size_str(msi_path),
+        }
+        product_code = None
+        product_name = None
+        upgrade_code = None
+        product_version = None
+        manufacturer = None
+        read_failed = False
+    else:
+        props, read_failed = _read_msi_properties(msi_path)
+        product_code = props.get("ProductCode")
+        product_name = props.get("ProductName")
+        upgrade_code = props.get("UpgradeCode")
+        product_version = props.get("ProductVersion")
+        manufacturer = props.get("Manufacturer")
+        meta = {
+            "ProductName": product_name,
+            "ProductCode": product_code,
+            "UpgradeCode": upgrade_code,
+            "ProductVersion": product_version,
+            "Manufacturer": manufacturer,
+            "FileName": os.path.basename(msi_path),
+            "SizeBytes": _file_size_str(msi_path),
+        }
 
     confidence = 0.95 if product_code else 0.75
 
@@ -83,7 +128,6 @@ def analyze_msi(msi_path: str) -> InstallPlan:
             )
         )
     else:
-        plan.notes.append("ProductCode not found (MSI may be unusual or property read failed).")
         plan.uninstall_candidates.append(
             CommandCandidate(
                 command=f'msiexec /x "{msi_path}" /qn /norestart',
@@ -92,10 +136,13 @@ def analyze_msi(msi_path: str) -> InstallPlan:
             )
         )
 
-    # Extra helpful note if _msi isn't available
-    try:
-        import _msi  # type: ignore # noqa: F401
-    except Exception:
-        plan.notes.append("Python _msi module unavailable. Use CPython on Windows (not WSL) to read MSI properties.")
+    # Notes: precise wording by state (no misleading "ProductCode not found" when _msi was never used)
+    if not msi_module_available:
+        plan.notes.append("MSI properties unavailable (Python _msi module not loaded).")
+        plan.notes.append("Use CPython on Windows (not WSL) for full MSI metadata.")
+    elif read_failed:
+        plan.notes.append("MSI property read failed.")
+    elif not product_code:
+        plan.notes.append("ProductCode not found in MSI Property table.")
 
     return plan

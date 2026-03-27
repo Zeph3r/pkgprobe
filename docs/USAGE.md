@@ -56,6 +56,9 @@ uv run pytest -v
 | `pkgprobe analyze <path>` | Static analysis → InstallPlan JSON + summary |
 | `pkgprobe schema` | Print InstallPlan JSON schema |
 | `pkgprobe trace-install <path> --bundle-out <file>` | Run trace session → .pkgtrace bundle |
+| `pkgprobe-trace init-vm` | Generate a VMware TraceVM `.vmx` template |
+| `pkgprobe-trace run` | Run VMware trace → InstallPlan JSON (+ optional verified manifest) |
+| `pkgprobe-trace pack-intunewin` | Package verified trace into `.intunewin` |
 
 ---
 
@@ -254,6 +257,18 @@ With `--no-exec`, the installer is never run. Preflight runs; the attempt list (
 - **trace-install execution:** Runs the real installer; no elevation. Installers that require admin may prompt UAC or fail in a non-elevated shell. Timeout applies (default 600 s).
 - **Switch parsing:** Single attempt string is split naively (`switch.split()`); complex quoted arguments may not be preserved.
 - **Banner:** Shown only when stdout is a TTY and `CI` is not set; use `--quiet` on `analyze` for scripted use.
+
+---
+## Trace + Intune packaging (runtime trace mode)
+
+This repository also includes a separate CLI for **runtime execution inside disposable VMware VMs**:
+
+- `pkgprobe-trace init-vm` (generate VMX + optional disk)
+- `pkgprobe-trace run` (VM snapshot → install → ProcMon capture → diff → InstallPlan + verified manifest)
+- `pkgprobe-trace pack-intunewin` (create `.intunewin` using IntuneWinAppUtil)
+
+For the full, step-by-step setup (VMX + guest filesystem paths, snapshot naming, backend feature flags, and API endpoints),
+see: **[Trace VM + Intune packaging docs](TRACE-INTUNE.md)**.
 
 ---
 

@@ -64,12 +64,17 @@ def _print_summary(plan: InstallPlan, cve_check_requested: bool = False) -> None
     console.print(f"[bold]File:[/bold] {plan.file_type}")
 
     if plan.metadata:
-        meta_table = Table(title="Metadata", show_lines=True)
-        meta_table.add_column("Key", style="bold")
-        meta_table.add_column("Value")
-        for k, v in plan.metadata.items():
-            meta_table.add_row(str(k), "" if v is None else str(v))
-        console.print(meta_table)
+        filled = {k: v for k, v in plan.metadata.items() if v is not None and str(v).strip()}
+        if filled:
+            meta_table = Table(title="Metadata", show_lines=True)
+            meta_table.add_column("Key", style="bold")
+            meta_table.add_column("Value")
+            for k, v in plan.metadata.items():
+                if v is not None and str(v).strip():
+                    meta_table.add_row(str(k), str(v))
+            console.print(meta_table)
+        else:
+            console.print("[dim]Metadata: No MSI properties read (use CPython on Windows for ProductCode, ProductName, etc.).[/dim]")
 
     if plan.install_candidates:
         t = Table(title="Install candidates", show_lines=True)

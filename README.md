@@ -12,6 +12,9 @@ Available on [PyPI](https://pypi.org/project/pkgprobe/).
 
 **[Full usage documentation](docs/USAGE.md)** — Commands, options, output formats, and trace-install behavior.
 
+**Trace + Intune packaging (VMware ProcMon trace → verified manifest → `.intunewin`)**:
+**[Full trace/intunewin documentation](docs/TRACE-INTUNE.md)**.
+
 ------------------------------------------------------------------------
 
 ## ✨ Why pkgprobe exists
