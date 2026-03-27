@@ -1,12 +1,17 @@
 ## pkgprobe
 
 
-**pkgprobe** is a Windows-first CLI tool that statically analyzes EXE
-and MSI installers and produces a **machine-readable install plan** for
-endpoint management and packaging workflows.
+**pkgprobe** is a Windows installer intelligence toolkit for endpoint teams.
 
-Think: *package intelligence* for Intune, SCCM, Jamf, RMM, and Client
-Platform Engineering teams.
+It combines:
+- **static analysis** (`pkgprobe analyze`) for fast, no-exec prediction of
+  silent install commands, detection rules, and uninstall guidance
+- **optional runtime verification** (`pkgprobe-trace`) that executes installers
+  in disposable VMware snapshots, captures ProcMon-backed system changes, and
+  generates verified outputs (including `.intunewin` packaging artifacts)
+
+Think: reliable package intelligence for Intune, SCCM, Jamf, RMM, and Client
+Platform Engineering workflows.
 
 Available on [PyPI](https://pypi.org/project/pkgprobe/).
 
@@ -28,10 +33,11 @@ Packaging software on Windows is still more art than science:
     trial-and-error
 -   Testing installers directly is slow and risky on production machines
 
-**pkgprobe** focuses on the *analysis* phase first:
+**pkgprobe** is static-first by design:
 
-> Understand what an installer is likely to do --- *before* you ever run
-> it.
+> Understand what an installer is likely to do before execution, then
+> optionally verify behavior in an isolated VM when confidence needs to be
+> production-grade.
 
 ------------------------------------------------------------------------
 
@@ -63,9 +69,18 @@ plan** containing:
 -   JSON output suitable for pipelines and tooling
 -   Human-readable CLI summary for engineers
 
+### Optional runtime trace + packaging
+
+-   `pkgprobe-trace run` executes installers in a disposable VMware VM
+    snapshot and captures ProcMon trace data
+-   Produces a **verified trace manifest** with strong detection anchors
+    and eligibility reasons
+-   `pkgprobe-trace pack-intunewin` can generate `.intunewin` artifacts
+    from verified traces
+
 **Safety-first by design**\
-This version performs **static analysis only**.\
-No installers are executed.
+Default `pkgprobe analyze` is still **static analysis only** (no execution).\
+Runtime execution is opt-in and isolated in a disposable VM workflow.
 
 ------------------------------------------------------------------------
 
@@ -103,6 +118,19 @@ Generated `installplan.json` (excerpt):
 }
 ```
 
+Runtime trace + manifest example:
+
+```powershell
+pkgprobe-trace run .\setup.exe `
+  --vmx "C:\VMs\TraceVM\TraceVM.vmx" `
+  --snapshot TRACE_BASE `
+  --guest-user Administrator `
+  --guest-pass "..." `
+  --output "C:\traces\job-001" `
+  --silent-args /S `
+  --emit-manifest
+```
+
 ------------------------------------------------------------------------
 
 ## Installation
@@ -130,6 +158,9 @@ uv run pkgprobe --help
 
 Use `--quiet` / `-q` to suppress the banner when scripting (CI,
 pipelines, etc.).
+
+For runtime tracing and Intune packaging setup, see:
+- [docs/TRACE-INTUNE.md](docs/TRACE-INTUNE.md)
 
 ------------------------------------------------------------------------
 
@@ -160,9 +191,10 @@ This keeps analysis **fast, safe, and explainable**.
 
 -   Windows-first (intentional --- this targets Windows endpoints)
 -   EXE analysis is heuristic-based (not guaranteed)
--   No execution or sandbox tracing in v0.1
--   Detection accuracy improves significantly with runtime tracing
-    (planned)
+-   Runtime tracing currently targets VMware Workstation-based Windows
+    workers (cloud worker backends are future architecture)
+-   `pkgprobe-trace` requires guest preparation (VMware Tools, ProcMon,
+    baseline snapshot)
 
 ------------------------------------------------------------------------
 
@@ -186,8 +218,8 @@ This keeps analysis **fast, safe, and explainable**.
 
 -   install4j / Java-based installer detection
 -   Partial-read scanning for very large EXEs
--   ProcMon-backed trace mode
--   Optional trace-install mode (opt-in, sandboxed)
+-   Cloud VM backends for trace workers
+-   Queue-native multi-job orchestration for trace + packaging
 
 ------------------------------------------------------------------------
 
