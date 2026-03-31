@@ -53,6 +53,7 @@ class InstallerExecutor:
             args.extend(self._config.silent_args)
 
         logger.info("Running installer: %s %s", self._config.guest_installer_path, " ".join(args))
+        # vmrun waits for the guest process unless -noWait is used; capture runs until this returns.
         proc = self._vmware.run_program_in_guest(
             self._config.guest_installer_path,
             args=args,

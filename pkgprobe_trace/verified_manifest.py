@@ -19,7 +19,14 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Literal, Optional
 
 
-DetectionType = Literal["registry_key", "registry_value", "file_exists", "service_exists", "scheduled_task_exists"]
+DetectionType = Literal[
+    "registry_key",
+    "registry_value",
+    "file_exists",
+    "service_exists",
+    "scheduled_task_exists",
+    "msi_product_code",
+]
 
 
 @dataclass(frozen=True)

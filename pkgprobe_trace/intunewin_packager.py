@@ -172,7 +172,7 @@ class IntuneWinPackager:
         if best is None:
             return "exit 1\n"
 
-        if best.type == "registry_key":
+        if best.type in ("registry_key", "msi_product_code"):
             # ProcMon exports registry keys in a variety of formats; normalize for PowerShell.
             path = best.value
             # Convert common prefixes

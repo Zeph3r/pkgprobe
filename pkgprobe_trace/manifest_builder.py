@@ -20,7 +20,15 @@ from .verified_manifest import DetectionCandidate, VerifiedTraceManifest
 
 
 _UNINSTALL_RE = re.compile(r"\\Uninstall\\", re.IGNORECASE)
+_MSI_GUID_IN_PATH_RE = re.compile(
+    r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}",
+    re.IGNORECASE,
+)
 _PROGRAM_FILES_RE = re.compile(r"\\Program Files( \\(x86\\))?\\", re.IGNORECASE)
+_VMWARE_PF_RE = re.compile(
+    r"\\Program Files( \(x86\))?\\(Common Files\\)?VMware(\\|$)",
+    re.IGNORECASE,
+)
 _TEMP_HINT_RE = re.compile(r"\\(Temp|AppData\\Local\\Temp)\\", re.IGNORECASE)
 _NOISY_HINT_RE = re.compile(r"\\(Windows\\Prefetch|Windows\\Temp|ProgramData\\Package Cache)\\", re.IGNORECASE)
 
@@ -43,6 +51,8 @@ def _best_file_candidates(files: List[FileChange], limit: int = 5) -> List[Detec
             continue
         if _TEMP_HINT_RE.search(p):
             continue
+        if _VMWARE_PF_RE.search(p):
+            continue
         if not _PROGRAM_FILES_RE.search(p):
             continue
         # Prefer created files (often main exe/dll) over modified.
@@ -60,6 +70,32 @@ def _best_file_candidates(files: List[FileChange], limit: int = 5) -> List[Detec
     return cands
 
 
+def _msi_product_code_candidates(registry: List[RegistryChange], limit: int = 5) -> List[DetectionCandidate]:
+    out: List[DetectionCandidate] = []
+    seen = set()
+    for r in registry:
+        path = r.path or ""
+        if not path or not _UNINSTALL_RE.search(path):
+            continue
+        if not _MSI_GUID_IN_PATH_RE.search(path):
+            continue
+        lk = path.lower()
+        if lk in seen:
+            continue
+        seen.add(lk)
+        out.append(
+            DetectionCandidate(
+                type="msi_product_code",
+                value=path,
+                confidence=0.95,
+                rationale="MSI ProductCode (GUID under Uninstall)",
+            )
+        )
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _best_uninstall_key_candidates(registry: List[RegistryChange], limit: int = 5) -> List[DetectionCandidate]:
     keys = []
     for r in registry:
@@ -67,6 +103,8 @@ def _best_uninstall_key_candidates(registry: List[RegistryChange], limit: int = 
         if not path:
             continue
         if _UNINSTALL_RE.search(path):
+            if _MSI_GUID_IN_PATH_RE.search(path):
+                continue
             # Registry CSV paths may include value names. Keep full path; detection can use Test-Path.
             keys.append(path)
     # Deduplicate while keeping order
@@ -130,6 +168,7 @@ def build_verified_manifest(
     silent = silent_args if silent_args is not None else _parse_silent_args_from_install_command(plan.install_command)
 
     candidates: List[DetectionCandidate] = []
+    candidates.extend(_msi_product_code_candidates(diff.registry))
     candidates.extend(_best_uninstall_key_candidates(diff.registry))
     candidates.extend(_best_file_candidates(diff.files))
     candidates.extend(_service_candidates(diff))
@@ -148,7 +187,9 @@ def build_verified_manifest(
 
     strong = []
     for c in candidates:
-        if c.type == "registry_key" and _UNINSTALL_RE.search(c.value):
+        if c.type == "msi_product_code":
+            strong.append(c)
+        elif c.type == "registry_key" and _UNINSTALL_RE.search(c.value):
             strong.append(c)
         elif c.type == "file_exists" and _PROGRAM_FILES_RE.search(c.value) and not _TEMP_HINT_RE.search(c.value):
             strong.append(c)

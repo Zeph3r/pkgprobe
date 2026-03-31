@@ -91,7 +91,39 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     run.add_argument("--guest-pass", required=True, help="Guest password (VMware Tools auth)")
     run.add_argument("--output", required=True, help="Output directory on host for trace artifacts")
     run.add_argument("--silent-args", nargs="*", default=["/S"], help="Silent install arguments")
-    run.add_argument("--boot-wait", type=int, default=30, help="Seconds to wait after VM start")
+    run.add_argument(
+        "--boot-wait",
+        type=int,
+        default=0,
+        help="Extra seconds to sleep after VMware Tools are ready (default: 0)",
+    )
+    run.add_argument(
+        "--guest-tools-timeout",
+        type=int,
+        default=120,
+        help="Max seconds to poll vmrun checkToolsState until Tools are running",
+    )
+    run.add_argument(
+        "--vmrun-retries",
+        type=int,
+        default=2,
+        help="Extra vmrun attempts after a failed guest/file operation",
+    )
+    run.add_argument(
+        "--pause-after",
+        action="store_true",
+        help="Do not revert snapshot after trace (leave VM up for manual inspection)",
+    )
+    run.add_argument(
+        "--host-procmon",
+        default="",
+        help="Path to procmon.exe on the host: copy PML from guest first, export CSV here (faster on some setups)",
+    )
+    run.add_argument(
+        "--baseline-csv",
+        default="",
+        help="Host path to a baseline ProcMon CSV (e.g. idle VM) to subtract from this trace",
+    )
 
     run.add_argument(
         "--procmon-path",
@@ -248,6 +280,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             snapshot_name=args.snapshot,
             guest_username=args.guest_user,
             guest_password=args.guest_pass,
+            vmrun_retries=args.vmrun_retries,
         )
     )
 
@@ -271,14 +304,20 @@ def main(argv: Optional[List[str]] = None) -> int:
         vmware=vmware,
         procmon=procmon,
         installer_executor=installer_executor,
-        diff_engine=DiffEngine(),
+        diff_engine=DiffEngine(
+            installer_process_image=os.path.basename(args.guest_installer_path),
+        ),
         config=TraceWorkerConfig(
             host_output_dir=args.output,
             guest_pml_path=args.guest_pml,
             guest_csv_path=args.guest_csv,
             host_pml_name=args.host_pml_name,
             host_csv_name=args.host_csv_name,
+            guest_tools_timeout_sec=args.guest_tools_timeout,
             boot_wait_sec=args.boot_wait,
+            pause_after_trace=bool(args.pause_after),
+            host_procmon_path=(args.host_procmon or None),
+            baseline_csv_path=(args.baseline_csv or None),
         ),
     )
 

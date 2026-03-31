@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -53,6 +54,8 @@ class VMwareControllerConfig:
     guest_password: str
     vmrun_path: str = "vmrun"
     default_timeout_sec: int = 300
+    vmrun_retries: int = 2
+    vmrun_retry_delay_sec: float = 1.0
 
 
 class VMwareController:
@@ -67,6 +70,52 @@ class VMwareController:
 
     def __init__(self, config: VMwareControllerConfig) -> None:
         self.config = config
+
+    def check_tools_state(self, timeout_sec: Optional[int] = None) -> str:
+        """
+        Return vmrun `checkToolsState` output for the VM (typically contains
+        ``running``, ``installed``, or ``not installed``).
+        """
+        args: List[str] = [
+            self.config.vmrun_path,
+            "-T",
+            "ws",
+            "checkToolsState",
+            self.config.vmx_path,
+        ]
+        proc = self._run_vmrun(
+            args,
+            timeout_sec=timeout_sec or 60,
+            operation="check_tools_state",
+            check=False,
+        )
+        return (proc.stdout or proc.stderr or "").strip().lower()
+
+    def wait_for_guest_tools(
+        self,
+        *,
+        poll_interval_sec: float = 2.0,
+        timeout_sec: int = 120,
+    ) -> None:
+        """
+        Poll until VMware Tools reports a running state, or raise on timeout.
+
+        Replaces a fixed post-boot sleep so fast hosts finish sooner and slow
+        disks still get a bounded wait.
+        """
+        deadline = time.monotonic() + timeout_sec
+        last = ""
+        while time.monotonic() < deadline:
+            last = self.check_tools_state()
+            if "running" in last:
+                logger.info("Guest VMware Tools ready (%s)", last)
+                return
+            logger.debug("Guest tools not ready yet: %s", last or "(empty)")
+            time.sleep(poll_interval_sec)
+        raise VMwareControllerError(
+            f"Timed out after {timeout_sec}s waiting for VMware Tools in guest "
+            f"(last checkToolsState output: {last!r})"
+        )
 
     def start_vm(self, nogui: bool = True, timeout_sec: Optional[int] = None) -> None:
         args: List[str] = [
@@ -163,6 +212,7 @@ class VMwareController:
         args: Optional[List[str]] = None,
         *,
         interactive: bool = False,
+        no_wait: bool = False,
         timeout_sec: Optional[int] = None,
         check: bool = False,
     ) -> subprocess.CompletedProcess:
@@ -179,6 +229,8 @@ class VMwareController:
         ]
         if interactive:
             vmrun_args.append("-interactive")
+        if no_wait:
+            vmrun_args.append("-noWait")
 
         vmrun_args.append(program_path)
         if args:
@@ -206,29 +258,56 @@ class VMwareController:
         if os.name == "nt":
             creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
 
-        try:
-            proc = subprocess.run(
-                args,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                check=False,
-                creationflags=creationflags,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise VMwareControllerError(
-                f"vmrun {operation} timed out after {timeout} seconds"
-            ) from exc
+        extra = self.config.vmrun_retries if check else 0
+        max_attempts = max(1, 1 + extra)
+        proc: Optional[subprocess.CompletedProcess] = None
 
-        if proc.stdout:
-            logger.debug("vmrun %s stdout:\n%s", operation, proc.stdout)
-        if proc.stderr:
-            logger.debug("vmrun %s stderr:\n%s", operation, proc.stderr)
+        for attempt in range(1, max_attempts + 1):
+            try:
+                proc = subprocess.run(
+                    args,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    check=False,
+                    creationflags=creationflags,
+                )
+            except subprocess.TimeoutExpired as exc:
+                if attempt >= max_attempts or not check:
+                    raise VMwareControllerError(
+                        f"vmrun {operation} timed out after {timeout} seconds"
+                    ) from exc
+                logger.warning(
+                    "vmrun %s timed out (attempt %s/%s), retrying in %ss",
+                    operation,
+                    attempt,
+                    max_attempts,
+                    self.config.vmrun_retry_delay_sec,
+                )
+                time.sleep(self.config.vmrun_retry_delay_sec)
+                continue
 
-        if check and proc.returncode != 0:
-            raise VMwareControllerError(
-                f"vmrun {operation} failed with exit code {proc.returncode}"
-            )
+            assert proc is not None
+            if proc.stdout:
+                logger.debug("vmrun %s stdout:\n%s", operation, proc.stdout)
+            if proc.stderr:
+                logger.debug("vmrun %s stderr:\n%s", operation, proc.stderr)
 
-        return proc
+            if check and proc.returncode != 0:
+                if attempt < max_attempts:
+                    logger.warning(
+                        "vmrun %s failed with exit code %s (attempt %s/%s), retrying in %ss",
+                        operation,
+                        proc.returncode,
+                        attempt,
+                        max_attempts,
+                        self.config.vmrun_retry_delay_sec,
+                    )
+                    time.sleep(self.config.vmrun_retry_delay_sec)
+                    continue
+                raise VMwareControllerError(
+                    f"vmrun {operation} failed with exit code {proc.returncode}"
+                )
+
+            return proc
 

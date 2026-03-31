@@ -9,12 +9,62 @@ the host can parse it deterministically.
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 from dataclasses import dataclass
 from typing import List, Optional
 
 from .vmware_controller import VMwareController
 
 logger = logging.getLogger(__name__)
+
+
+def export_pml_to_csv_on_host(
+    *,
+    host_pml_path: str,
+    host_csv_path: str,
+    procmon_exe: str,
+    quiet: bool = True,
+    timeout_sec: int = 180,
+) -> subprocess.CompletedProcess:
+    """
+    Run ProcMon on the host to convert a PML copied from the guest to CSV.
+
+    Requires Windows and a local ``procmon.exe`` (same Sysinternals build as
+    in the guest is ideal). Falls back to guest-side export when omitted.
+    """
+    if not os.path.isfile(host_pml_path):
+        raise FileNotFoundError(host_pml_path)
+    host_csv_dir = os.path.dirname(host_csv_path)
+    if host_csv_dir and not os.path.isdir(host_csv_dir):
+        os.makedirs(host_csv_dir, exist_ok=True)
+
+    args: List[str] = [procmon_exe, "/AcceptEula"]
+    if quiet:
+        args.append("/Quiet")
+    args.extend(["/OpenLog", host_pml_path, "/SaveAs", host_csv_path])
+
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+
+    logger.info("Host ProcMon PML->CSV: %s -> %s", host_pml_path, host_csv_path)
+    proc = subprocess.run(
+        args,
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        check=False,
+        creationflags=creationflags,
+    )
+    if proc.returncode != 0:
+        logger.warning(
+            "Host ProcMon export returned %s (stdout=%r stderr=%r)",
+            proc.returncode,
+            proc.stdout,
+            proc.stderr,
+        )
+    return proc
 
 
 @dataclass(frozen=True)
@@ -57,12 +107,18 @@ class ProcmonController:
 
     def start_capture(self) -> None:
         args: List[str] = []
+        args.append("/AcceptEula")
         if self._config.quiet:
             args.append("/Quiet")
         args.extend(["/BackingFile", self._config.backing_pml])
 
         logger.info("Starting ProcMon capture -> %s", self._config.backing_pml)
-        self._vmware.run_program_in_guest(self._config.procmon_path, args=args, check=False)
+        self._vmware.run_program_in_guest(
+            self._config.procmon_path,
+            args=args,
+            no_wait=True,
+            check=False,
+        )
 
     def stop_capture(self) -> None:
         args: List[str] = []

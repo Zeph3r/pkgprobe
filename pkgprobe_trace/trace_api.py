@@ -53,6 +53,7 @@ def create_app(
         *,
         output_dir: str,
         silent_args: List[str],
+        guest_tools_timeout_sec: int,
         boot_wait_sec: int,
         procmon_path: str,
         guest_installer_path: str,
@@ -66,6 +67,7 @@ def create_app(
                 guest_username=guest_username,
                 guest_password=guest_password,
                 vmrun_path=vmrun_path,
+                vmrun_retries=2,
             )
         )
         procmon = ProcmonController(
@@ -83,13 +85,16 @@ def create_app(
             vmware=vmware,
             procmon=procmon,
             installer_executor=installer,
-            diff_engine=DiffEngine(),
+            diff_engine=DiffEngine(
+                installer_process_image=os.path.basename(guest_installer_path),
+            ),
             config=TraceWorkerConfig(
                 host_output_dir=output_dir,
                 guest_pml_path=guest_pml_path,
                 guest_csv_path=guest_csv_path,
                 host_pml_name="trace.pml",
                 host_csv_name="trace.csv",
+                guest_tools_timeout_sec=guest_tools_timeout_sec,
                 boot_wait_sec=boot_wait_sec,
             ),
         )
@@ -98,7 +103,8 @@ def create_app(
     async def run_trace(
         installer: UploadFile = File(...),
         silent_args: Optional[str] = Form("/S"),
-        boot_wait_sec: int = Form(30),
+        guest_tools_timeout_sec: int = Form(120),
+        boot_wait_sec: int = Form(0),
         procmon_path: str = Form(r"C:\trace\tools\procmon.exe"),
         guest_installer_path: str = Form(r"C:\trace\installer.exe"),
         guest_pml_path: str = Form(r"C:\trace\logs\trace.pml"),
@@ -120,6 +126,7 @@ def create_app(
         worker = _make_worker(
             output_dir=str(job_dir),
             silent_args=args_list,
+            guest_tools_timeout_sec=guest_tools_timeout_sec,
             boot_wait_sec=boot_wait_sec,
             procmon_path=procmon_path,
             guest_installer_path=guest_installer_path,
