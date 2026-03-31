@@ -6,7 +6,7 @@ It includes:
 - Creating the trace VMX (`pkgprobe-trace init-vm`)
 - Running a trace (`pkgprobe-trace run`) and producing a **verified trace manifest**
 - Packaging into **`.intunewin`** (`pkgprobe-trace pack-intunewin`)
-- API endpoints in `api.pkgprobe.io/backend` (API-key gated + TTL caching)
+- Optional in-repo FastAPI (`pkgprobe_trace/trace_api.py`) and production **API** endpoints in `api.pkgprobe.io/backend` (API-key gated + TTL caching)
 
 ---
 
@@ -64,8 +64,9 @@ Before you trace any installer:
 - the trace worker will:
   - `revertToSnapshot <snapshot>`
   - start the VM
+  - **wait for VMware Tools** via `vmrun checkToolsState` (polls until Tools report **running**, default timeout 120s; optional extra `--boot-wait` seconds after that)
   - run the installer + ProcMon
-  - revert snapshot again for cleanup
+  - revert snapshot again for cleanup (unless `--pause-after` — see §4.3)
 
 If the snapshot doesn’t exist, tracing fails.
 
@@ -137,9 +138,9 @@ pkgprobe-trace run "C:\path\to\installer.exe" `
 Notes:
 - `--silent-args` is a list (default is `["/S"]`)
 - Use `--emit-manifest` to write `verified_manifest.json` into the output directory
-- The trace worker copies:
-  - `trace.pml` and exports `trace.csv` in the guest
-  - then copies the PML/CSV back to `--output`
+- **Artifact flow:** After stopping ProcMon, the worker copies **PML to the host first**. Then either:
+  - **Default:** export `trace.csv` **inside the guest**, then copy CSV to `--output`, or
+  - **`--host-procmon`:** run `procmon.exe` **on the host** to convert the copied PML → CSV (same `/OpenLog` / `/SaveAs` style as guest export). If host export fails, the worker falls back to guest export.
 - The CLI prints the **InstallPlan JSON** to stdout (this is what the backend parses)
 
 ### 4.2 Guest path overrides (only if needed)
@@ -147,6 +148,23 @@ If your guest tooling differs:
 - `--procmon-path` (default `C:\trace\tools\procmon.exe`)
 - `--guest-installer-path` (default `C:\trace\installer.exe`)
 - `--guest-pml` / `--guest-csv`
+
+### 4.3 Reliability, diff quality, and debugging (CLI flags)
+
+| Flag | Default | Purpose |
+|------|---------|--------|
+| `--guest-tools-timeout` | `120` | Max seconds to poll `checkToolsState` until Tools are **running** |
+| `--boot-wait` | `0` | Extra seconds to sleep **after** Tools are ready (rarely needed) |
+| `--vmrun-retries` | `2` | Extra attempts when a **checked** vmrun operation fails (e.g. copy flakiness) |
+| `--host-procmon` | *(empty)* | Host path to `procmon.exe`: PML→CSV on host after PML copy |
+| `--baseline-csv` | *(empty)* | Host path to a **baseline** ProcMon CSV (e.g. idle VM, no install); paths in the baseline diff are **subtracted** from the install trace |
+| `--pause-after` | off | **skip** the cleanup `revertToSnapshot` so the VM stays up for inspection |
+
+### 4.4 How the diff is built (noise, PID tree, baseline)
+
+- **Noise filters** (`pkgprobe_trace/trace_noise.py`): drop rows from known non-installer processes (ProcMon, VMware Tools daemons, Defender, etc.) and from paths such as `Program Files\VMware\`, `C:\trace\`, drivers, guest `Guest\AppData`, etc.
+- **Installer PID tree:** The diff engine uses the **basename of `--guest-installer-path`** (e.g. `installer.exe`) to find root PIDs in the CSV, then keeps **descendant** PIDs via `Parent PID`. If no row matches the installer name, PID filtering is **skipped** (with a warning) so traces are not emptied by mistake.
+- **Baseline:** The baseline CSV is **not** PID-filtered (idle traces often have no installer), so path-level subtraction still makes sense.
 
 ---
 
@@ -160,11 +178,14 @@ Verification is strict and focuses on producing Intune-friendly detection.
 In this implementation, verification fails unless:
 - a silent command (`silent_args`) is present
 - there is at least one **strong** detection anchor:
-  - **Uninstall registry key activity** (preferred), or
+  - **MSI ProductCode**-style `Uninstall\{GUID}` registry activity (manifest type `msi_product_code`, highest confidence), or
+  - **Uninstall registry key activity** (preferred; type `registry_key`), or
   - **Program Files file activity** (acceptable)
 - the strongest anchor has confidence >= `0.85`
 
 When not eligible, `verified_manifest.json` includes `verification_errors` explaining why.
+
+Detection script generation (`pack-intunewin`) treats `msi_product_code` like a registry key path for `Test-Path`/`HKLM:` normalization.
 
 ---
 
@@ -196,13 +217,21 @@ The backend does not pass this flag.
 
 ---
 
-## 7) API usage (api.pkgprobe.io/backend) — API key only + feature flags
+## 7) In-repo HTTP API (`pkgprobe_trace/trace_api.py`)
+
+The `pkgprobe` package includes a thin **FastAPI** wrapper around `TraceWorker` for local or trusted-network use. It is **not** the same deployment as the production `api.pkgprobe.io` service (which adds tenancy, API keys, caching, and may lag behind CLI flags).
+
+When extending the public backend, mirror new `TraceWorkerConfig` / CLI options in the backend’s trace runner as needed.
+
+---
+
+## 8) API usage (api.pkgprobe.io/backend) — API key only + feature flags
 
 The backend runs trace+pack on a Windows host and gates dangerous compute using:
 - API keys (not sessions) by default
 - feature flags
 
-### 7.1 Feature flags & required env (backend)
+### 8.1 Feature flags & required env (backend)
 On the API host, configure:
 
 VMware trace:
@@ -229,7 +258,7 @@ TTL caching:
 
 > Exact env var names map 1:1 to backend settings in `app/core/config.py`.
 
-### 7.2 Request format
+### 8.2 Request format
 For all endpoints below:
 - Upload with `multipart/form-data`
 - field name: `file`
@@ -241,7 +270,7 @@ Silent install selection:
 - `try_silent` (bool, optional)
 - `attempt` can be provided multiple times (repeatable form field) to override silent arg strings
 
-### 7.3 Endpoints
+### 8.3 Endpoints
 
 #### A) Manifest + eligibility reasons
 `POST /v1/trace-install/intunewin/manifest`
@@ -270,7 +299,7 @@ The backend:
 
 ---
 
-## 8) Cloud replication design notes
+## 9) Cloud replication design notes
 
 To make this replicable across cloud VM fleets:
 - the trace worker writes deterministic, job-scoped artifacts into the `--output` directory

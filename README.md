@@ -73,7 +73,19 @@ plan** containing:
 
 -   `pkgprobe-trace run` executes installers in a disposable VMware VM
     snapshot and captures ProcMon trace data
+-   **Guest readiness** uses `vmrun checkToolsState` polling (bounded wait)
+    instead of a fixed sleep; optional extra delay via `--boot-wait`
+-   **Diff quality:** built-in filters drop common VM/ProcMon noise (VMware
+    Tools paths, trace tooling, noisy processes); optional **installer PID
+    tree** filtering (ProcMon `PID` / `Parent PID`); optional **baseline CSV**
+    subtraction (idle VM capture) to remove boot/OS noise
+-   **Reliability:** `vmrun` retries on failed copy/guest operations
+-   **Performance:** copy PML to the host first and export CSV with
+    `--host-procmon` (local `procmon.exe`) instead of exporting only in the guest
+-   **Debugging:** `--pause-after` skips the cleanup snapshot revert so you can
+    inspect the VM
 -   Produces a **verified trace manifest** with strong detection anchors
+    (including **MSI ProductCode**-style `Uninstall\{GUID}` keys when seen)
     and eligibility reasons
 -   `pkgprobe-trace pack-intunewin` can generate `.intunewin` artifacts
     from verified traces
@@ -130,6 +142,10 @@ pkgprobe-trace run .\setup.exe `
   --silent-args /S `
   --emit-manifest
 ```
+
+Optional flags (see [docs/TRACE-INTUNE.md](docs/TRACE-INTUNE.md)): for example
+`--baseline-csv` (subtract an idle trace), `--host-procmon` (export PML→CSV on
+the host), `--vmrun-retries`, `--pause-after`, `--guest-tools-timeout`.
 
 ------------------------------------------------------------------------
 
@@ -195,6 +211,8 @@ This keeps analysis **fast, safe, and explainable**.
     workers (cloud worker backends are future architecture)
 -   `pkgprobe-trace` requires guest preparation (VMware Tools, ProcMon,
     baseline snapshot)
+-   Trace diffs are **heuristic** (ProcMon CSV); PID-tree and baseline options
+    improve signal but are not a substitute for full process-tree replay
 
 ------------------------------------------------------------------------
 

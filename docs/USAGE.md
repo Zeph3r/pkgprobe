@@ -267,6 +267,10 @@ This repository also includes a separate CLI for **runtime execution inside disp
 - `pkgprobe-trace run` (VM snapshot → install → ProcMon capture → diff → InstallPlan + verified manifest)
 - `pkgprobe-trace pack-intunewin` (create `.intunewin` using IntuneWinAppUtil)
 
+The `run` command supports **VMware Tools polling**, **vmrun retries**, optional **host-side** PML→CSV (`--host-procmon`), **baseline CSV** subtraction, **installer PID-tree** filtering (derived from the guest installer basename), **`--pause-after`** (skip cleanup revert), and manifest detection that includes **MSI `Uninstall\{GUID}`** keys when present.
+
+Optional FastAPI wrapper (local/trusted use): `pkgprobe_trace.trace_api` (`uv sync --extra trace`).
+
 For the full, step-by-step setup (VMX + guest filesystem paths, snapshot naming, backend feature flags, and API endpoints),
 see: **[Trace VM + Intune packaging docs](TRACE-INTUNE.md)**.
 
