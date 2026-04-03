@@ -52,14 +52,27 @@ class InstallerExecutor:
         if self._config.silent_args:
             args.extend(self._config.silent_args)
 
-        logger.info("Running installer: %s %s", self._config.guest_installer_path, " ".join(args))
-        # vmrun waits for the guest process unless -noWait is used; capture runs until this returns.
-        proc = self._vmware.run_program_in_guest(
-            self._config.guest_installer_path,
-            args=args,
-            timeout_sec=self._config.timeout_sec,
-            check=False,
-        )
+        guest_path = self._config.guest_installer_path
+        logger.info("Running installer: %s %s", guest_path, " ".join(args))
+
+        # For MSI payloads, invoke msiexec explicitly; vmrun cannot execute an .msi directly.
+        if guest_path.lower().endswith(".msi"):
+            full_args: List[str] = ["/i", guest_path]
+            full_args.extend(args)
+            proc = self._vmware.run_program_in_guest(
+                r"C:\Windows\System32\msiexec.exe",
+                args=full_args,
+                timeout_sec=self._config.timeout_sec,
+                check=False,
+            )
+        else:
+            # vmrun waits for the guest process unless -noWait is used; capture runs until this returns.
+            proc = self._vmware.run_program_in_guest(
+                guest_path,
+                args=args,
+                timeout_sec=self._config.timeout_sec,
+                check=False,
+            )
         if proc.returncode != 0:
             raise InstallerExecutorError(
                 f"Installer returned exit code {proc.returncode} (stdout={proc.stdout!r}, stderr={proc.stderr!r})"
