@@ -55,7 +55,7 @@ def _norm_process(name: Optional[str]) -> str:
     return name.strip().lower()
 
 
-def should_skip_file_event(process_name: Optional[str], path: str) -> bool:
+def should_skip_file_event(process_name: Optional[str], path: str, strictness: str = "balanced") -> bool:
     """Return True if this file path should not appear in the diff."""
     proc = _norm_process(process_name)
     if proc and proc in _NOISE_PROCESS_NAMES:
@@ -63,7 +63,19 @@ def should_skip_file_event(process_name: Optional[str], path: str) -> bool:
     np = _norm_path(path)
     if not np:
         return True
-    for prefix in _NOISE_FILE_PREFIXES:
+    prefixes = list(_NOISE_FILE_PREFIXES)
+    if strictness == "aggressive":
+        prefixes.extend(
+            [
+                r"c:\windows\temp",
+                r"c:\windows\prefetch",
+                r"c:\programdata\microsoft\search",
+            ]
+        )
+    elif strictness == "conservative":
+        # Keep only VM/process-specific file skips.
+        prefixes = [r"c:\program files\vmware", r"c:\program files (x86)\vmware", r"c:\trace"]
+    for prefix in prefixes:
         if np.startswith(prefix):
             return True
     # Typical disposable-VM guest profile noise (adjust if your guest username differs).
@@ -72,7 +84,7 @@ def should_skip_file_event(process_name: Optional[str], path: str) -> bool:
     return False
 
 
-def should_skip_registry_event(process_name: Optional[str], path: str) -> bool:
+def should_skip_registry_event(process_name: Optional[str], path: str, strictness: str = "balanced") -> bool:
     """Return True if this registry path should not appear in the diff."""
     proc = _norm_process(process_name)
     if proc and proc in _NOISE_PROCESS_NAMES:
@@ -80,7 +92,17 @@ def should_skip_registry_event(process_name: Optional[str], path: str) -> bool:
     np = _norm_path(path)
     if not np:
         return True
-    for sub in _NOISE_REGISTRY_SUBSTRINGS:
+    subs = list(_NOISE_REGISTRY_SUBSTRINGS)
+    if strictness == "aggressive":
+        subs.extend(
+            [
+                r"\software\microsoft\windows\currentversion\group policy",
+                r"\software\microsoft\windows\currentversion\explorer",
+            ]
+        )
+    elif strictness == "conservative":
+        subs = [r"\software\vmware", r"\system\currentcontrolset\services\vmware"]
+    for sub in subs:
         if sub in np:
             return True
     return False

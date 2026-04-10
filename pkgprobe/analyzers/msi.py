@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Dict, Optional, Tuple
 
-from pkgprobe.models import CommandCandidate, DetectionRule, Evidence, InstallPlan
+from pkgprobe.models import CommandCandidate, DeploymentAssessment, DetectionRule, Evidence, InstallPlan
 
 # Keys we read from MSI Property table when _msi is available
 _MSI_PROPERTY_KEYS = ("ProductName", "ProductCode", "UpgradeCode", "ProductVersion", "Manufacturer")
@@ -93,18 +93,42 @@ def analyze_msi(msi_path: str) -> InstallPlan:
 
     confidence = 0.95 if product_code else 0.75
 
+    install_cmd = f'msiexec /i "{msi_path}" /qn /norestart'
+
+    if product_code:
+        deployment = DeploymentAssessment(
+            silent_viability="likely",
+            deployment_risk="low",
+            recommended_next_step="auto_package",
+            packaging_tier="simple",
+            tier_reason="MSI with ProductCode; msiexec /qn is well-understood",
+            suggested_command=install_cmd,
+        )
+    else:
+        deployment = DeploymentAssessment(
+            silent_viability="likely",
+            deployment_risk="moderate",
+            recommended_next_step="auto_package",
+            packaging_tier="pro",
+            tier_reason="MSI without ProductCode; install works but detection may need trace",
+            suggested_command=install_cmd,
+        )
+
     plan = InstallPlan(
         input_path=msi_path,
         file_type="msi",
         installer_type="MSI",
         confidence=confidence,
         metadata=meta,
+        silent_viability="likely",
+        recommendation="silent_may_work",
+        deployment=deployment,
     )
 
     # Install command
     plan.install_candidates.append(
         CommandCandidate(
-            command=f'msiexec /i "{msi_path}" /qn /norestart',
+            command=install_cmd,
             confidence=0.95,
             evidence=[Evidence(kind="msi", detail="Standard msiexec silent install")],
         )
@@ -125,6 +149,8 @@ def analyze_msi(msi_path: str) -> InstallPlan:
                 value=product_code,
                 confidence=0.95,
                 evidence=[Evidence(kind="msi", detail="ProductCode suggests reliable MSI detection")],
+                version=product_version if product_version else None,
+                version_operator="ge" if product_version else None,
             )
         )
     else:

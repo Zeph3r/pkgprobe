@@ -107,8 +107,10 @@ class VMwareController:
         last = ""
         while time.monotonic() < deadline:
             last = self.check_tools_state()
-            if "running" in last:
-                logger.info("Guest VMware Tools ready (%s)", last)
+            # VMware Workstation sometimes reports "installed" even when Tools
+            # are effectively ready for guest operations. Treat both as good.
+            if "running" in last or last == "installed":
+                logger.info("Guest VMware Tools ready (%s)", last or "unknown")
                 return
             logger.debug("Guest tools not ready yet: %s", last or "(empty)")
             time.sleep(poll_interval_sec)

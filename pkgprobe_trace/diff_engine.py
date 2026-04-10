@@ -71,6 +71,27 @@ class DiffResult:
     def to_json(self) -> str:
         return json.dumps(self.to_json_dict(), indent=2, sort_keys=True)
 
+    @classmethod
+    def from_json_dict(cls, d: Dict[str, object]) -> "DiffResult":
+        files_raw = d.get("files") or []
+        reg_raw = d.get("registry") or []
+        svc_raw = d.get("services") or []
+        task_raw = d.get("scheduled_tasks") or []
+        if not isinstance(files_raw, list):
+            files_raw = []
+        if not isinstance(reg_raw, list):
+            reg_raw = []
+        if not isinstance(svc_raw, list):
+            svc_raw = []
+        if not isinstance(task_raw, list):
+            task_raw = []
+        return cls(
+            files=[FileChange(**x) for x in files_raw],  # type: ignore[arg-type]
+            registry=[RegistryChange(**x) for x in reg_raw],  # type: ignore[arg-type]
+            services=[ServiceChange(**x) for x in svc_raw],  # type: ignore[arg-type]
+            scheduled_tasks=[ScheduledTaskChange(**x) for x in task_raw],  # type: ignore[arg-type]
+        )
+
 
 def _parse_int_pid(value: Optional[str]) -> Optional[int]:
     if value is None:
@@ -192,6 +213,13 @@ class DiffEngine:
         self,
         *,
         installer_process_image: Optional[str] = None,
+        include_processes: Optional[List[str]] = None,
+        exclude_processes: Optional[List[str]] = None,
+        include_path_prefixes: Optional[List[str]] = None,
+        exclude_path_prefixes: Optional[List[str]] = None,
+        registry_only: bool = False,
+        strict_pid_tree: bool = False,
+        noise_strictness: str = "balanced",
     ) -> None:
         """
         Parameters
@@ -202,6 +230,13 @@ class DiffEngine:
             are kept (in addition to path/process noise rules).
         """
         self._installer_process_image = installer_process_image
+        self._include_processes = {x.strip().lower() for x in (include_processes or []) if x.strip()}
+        self._exclude_processes = {x.strip().lower() for x in (exclude_processes or []) if x.strip()}
+        self._include_path_prefixes = [_norm_path(x) for x in (include_path_prefixes or []) if str(x).strip()]
+        self._exclude_path_prefixes = [_norm_path(x) for x in (exclude_path_prefixes or []) if str(x).strip()]
+        self._registry_only = bool(registry_only)
+        self._strict_pid_tree = bool(strict_pid_tree)
+        self._noise_strictness = noise_strictness
 
     def build_diff_from_procmon_csv(self, csv_path: str) -> DiffResult:
         return self.build_diff_from_procmon_csvs([csv_path])
@@ -222,6 +257,9 @@ class DiffEngine:
                 paths,
                 self._installer_process_image,
             )
+        if self._strict_pid_tree and self._installer_process_image and not install_allowlist:
+            logger.warning("Strict PID-tree mode: no installer PID roots found; returning empty diff")
+            return DiffResult()
 
         main = self._diff_from_paths(paths, install_allowlist)
 
@@ -258,6 +296,9 @@ class DiffEngine:
                     if not op or not path:
                         continue
 
+                    if not self._pass_custom_filters(process=process, path=path):
+                        continue
+
                     if pid_allowlist is not None:
                         pid = _parse_int_pid(row.get("PID"))
                         if pid is not None and pid not in pid_allowlist:
@@ -268,7 +309,7 @@ class DiffEngine:
                         | self.FILE_MODIFY_OPS
                         | self.FILE_DELETE_OPS
                     ):
-                        if should_skip_file_event(process, path):
+                        if should_skip_file_event(process, path, strictness=self._noise_strictness):
                             continue
                     elif op in (
                         self.REG_CREATE_OPS
@@ -276,16 +317,22 @@ class DiffEngine:
                         | self.REG_DELETE_KEY_OPS
                         | self.REG_DELETE_VALUE_OPS
                     ):
-                        if should_skip_registry_event(process, path):
+                        if should_skip_registry_event(process, path, strictness=self._noise_strictness):
                             continue
 
                     if op in self.FILE_CREATE_OPS:
+                        if self._registry_only:
+                            continue
                         self._record_file_change(file_changes, path, "create", process)
                         continue
                     if op in self.FILE_MODIFY_OPS:
+                        if self._registry_only:
+                            continue
                         self._record_file_change(file_changes, path, "modify", process)
                         continue
                     if op in self.FILE_DELETE_OPS:
+                        if self._registry_only:
+                            continue
                         self._record_file_change(file_changes, path, "delete", process)
                         continue
 
@@ -315,6 +362,19 @@ class DiffEngine:
         tasks = self._infer_scheduled_tasks(reg_changes)
 
         return DiffResult(files=files, registry=reg_changes, services=services, scheduled_tasks=tasks)
+
+    def _pass_custom_filters(self, *, process: Optional[str], path: str) -> bool:
+        proc = _norm_process(process)
+        p = _norm_path(path)
+        if self._include_processes and proc not in self._include_processes:
+            return False
+        if proc and proc in self._exclude_processes:
+            return False
+        if self._include_path_prefixes and not any(p.startswith(x) for x in self._include_path_prefixes):
+            return False
+        if self._exclude_path_prefixes and any(p.startswith(x) for x in self._exclude_path_prefixes):
+            return False
+        return True
 
     @staticmethod
     def _record_file_change(

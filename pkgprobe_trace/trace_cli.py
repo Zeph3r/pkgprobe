@@ -28,6 +28,8 @@ from .installplan_generator import InstallPlan
 from .installer_executor import InstallerExecutionConfig, InstallerExecutor
 from .intunewin_packager import IntuneWinPackager, IntuneWinPackagerConfig
 from .procmon_controller import ProcmonConfig, ProcmonController
+from .procmon_tuning import parse_procmon_tuning
+from .psadt_wrapper import PsadtWrapperConfig
 from .trace_worker import TraceWorker, TraceWorkerConfig
 from .verified_manifest import VerifiedTraceManifest
 from .vmware_controller import VMwareController, VMwareControllerConfig
@@ -124,6 +126,17 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         default="",
         help="Host path to a baseline ProcMon CSV (e.g. idle VM) to subtract from this trace",
     )
+    run.add_argument(
+        "--procmon-profile",
+        default="balanced",
+        choices=["balanced", "low_noise", "high_fidelity"],
+        help="ProcMon/diff tuning profile",
+    )
+    run.add_argument(
+        "--procmon-tuning-json",
+        default="",
+        help="Optional JSON override for ProcMon/diff tuning",
+    )
 
     run.add_argument(
         "--procmon-path",
@@ -166,6 +179,81 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         help="Filename for manifest stored under output dir (with --emit-manifest)",
     )
     run.add_argument("--verbose", action="store_true", help="Verbose logging")
+    run.add_argument(
+        "--installer-timeout",
+        type=int,
+        default=120,
+        help="Hard timeout (seconds) for vmrun waiting on the primary installer process in the guest",
+    )
+    run.add_argument(
+        "--installer-tail-wait",
+        type=int,
+        default=600,
+        help="After the installer returns, wait up to this many seconds for msiexec to finish",
+    )
+    run.add_argument(
+        "--installer-quiet-window",
+        type=int,
+        default=10,
+        help="Quiet seconds with no installer activity before completion is declared",
+    )
+    run.add_argument(
+        "--installer-min-runtime",
+        type=int,
+        default=0,
+        help="Minimum seconds before quiet-window completion is allowed",
+    )
+    run.add_argument(
+        "--stuck-stage-timeout",
+        type=float,
+        default=900.0,
+        help="Fail if a trace stage does not complete within this many seconds (see trace_progress.json)",
+    )
+    run.add_argument(
+        "--trace-wall-seconds",
+        type=float,
+        default=0.0,
+        help="Fail the entire trace after this many seconds (0 = disabled)",
+    )
+    run.add_argument("--stage-timeout-boot", type=float, default=0.0, help="Per-stage timeout for booting_vm (0 = disabled)")
+    run.add_argument("--stage-timeout-installer", type=float, default=0.0, help="Per-stage timeout for running_installer (0 = disabled)")
+    run.add_argument("--stage-timeout-export", type=float, default=0.0, help="Per-stage timeout for exporting_trace (0 = disabled)")
+    run.add_argument("--stage-timeout-parse", type=float, default=0.0, help="Per-stage timeout for parsing (0 = disabled)")
+    run.add_argument("--stage-timeout-pack", type=float, default=0.0, help="Per-stage timeout for generating_output (0 = disabled)")
+    run.add_argument("--baseline-max-age-hours", type=float, default=0.0, help="Ignore baseline CSV older than this many hours (0 = disabled)")
+    run.add_argument(
+        "--verification-strictness",
+        choices=["strict", "balanced", "weak_signal_allowed"],
+        default="balanced",
+        help="Manifest verification strictness profile",
+    )
+    run.add_argument(
+        "--noise-strictness",
+        choices=["conservative", "balanced", "aggressive"],
+        default="balanced",
+        help="Built-in noise filtering strictness profile",
+    )
+    run.add_argument(
+        "--diagnostics-level",
+        choices=["normal", "deep"],
+        default="normal",
+        help="Troubleshooting verbosity for guest diagnostics",
+    )
+    run.add_argument(
+        "--no-guest-installer-diag",
+        action="store_true",
+        help="Disable tasklist/wmic guest logging after installer (default: diagnostics on)",
+    )
+    run.add_argument(
+        "--auto-wrap",
+        action="store_true",
+        help="If silent install fails, generate a PSADT wrapper and verify it in a clean VM",
+    )
+    run.add_argument(
+        "--psadt-toolkit-path",
+        default="",
+        help="Path to a custom PSADT toolkit dir (defaults to bundled minimal template)",
+    )
 
     pack = sub.add_parser("pack-intunewin", help="Create a .intunewin package from trace output")
     pack.add_argument(
@@ -202,6 +290,11 @@ def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--allow-unverified",
         action="store_true",
         help="Allow packaging even if the manifest verification failed (not recommended)",
+    )
+    pack.add_argument(
+        "--community-pack",
+        action="store_true",
+        help="Unsafe local-only alias for --allow-unverified (draft or unverified manifests)",
     )
     pack.add_argument("--verbose", action="store_true", help="Verbose logging")
 
@@ -260,7 +353,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 IntuneWinPackagerConfig(
                     intunewin_util_path=args.util,
                     overwrite=bool(args.overwrite),
-                    allow_unverified=bool(args.allow_unverified),
+                    allow_unverified=bool(args.allow_unverified) or bool(getattr(args, "community_pack", False)),
                 )
             )
             produced = packager.pack_from_trace_output(
@@ -283,12 +376,15 @@ def main(argv: Optional[List[str]] = None) -> int:
             vmrun_retries=args.vmrun_retries,
         )
     )
+    tuning = parse_procmon_tuning(args.procmon_profile, args.procmon_tuning_json or "")
 
     procmon = ProcmonController(
         vmware,
         ProcmonConfig(
             procmon_path=args.procmon_path,
             backing_pml=args.guest_pml,
+            profile=tuning.profile,
+            tuning_json=args.procmon_tuning_json or "",
         ),
     )
 
@@ -297,6 +393,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         InstallerExecutionConfig(
             guest_installer_path=args.guest_installer_path,
             silent_args=args.silent_args,
+            timeout_sec=int(args.installer_timeout),
+            installer_tail_wait_sec=int(args.installer_tail_wait),
+            installer_quiet_window_sec=int(args.installer_quiet_window),
+            installer_min_runtime_sec=int(args.installer_min_runtime),
+            diagnostics_level=str(args.diagnostics_level),
+            guest_diag_after_installer=not bool(args.no_guest_installer_diag),
         ),
     )
 
@@ -306,6 +408,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         installer_executor=installer_executor,
         diff_engine=DiffEngine(
             installer_process_image=os.path.basename(args.guest_installer_path),
+            include_processes=tuning.include_processes,
+            exclude_processes=tuning.exclude_processes,
+            include_path_prefixes=tuning.include_path_prefixes,
+            exclude_path_prefixes=tuning.exclude_path_prefixes,
+            registry_only=tuning.registry_only,
+            strict_pid_tree=tuning.strict_pid_tree,
+            noise_strictness=tuning.noise_strictness if tuning.noise_strictness else str(args.noise_strictness),
         ),
         config=TraceWorkerConfig(
             host_output_dir=args.output,
@@ -318,11 +427,46 @@ def main(argv: Optional[List[str]] = None) -> int:
             pause_after_trace=bool(args.pause_after),
             host_procmon_path=(args.host_procmon or None),
             baseline_csv_path=(args.baseline_csv or None),
+            baseline_subtraction=bool(tuning.baseline_subtraction),
+            baseline_max_age_hours=float(args.baseline_max_age_hours),
+            verification_strictness=tuning.verification_strictness if tuning.verification_strictness else str(args.verification_strictness),
+            noise_strictness=tuning.noise_strictness if tuning.noise_strictness else str(args.noise_strictness),
+            stuck_stage_timeout_sec=float(args.stuck_stage_timeout),
+            trace_wall_clock_sec=float(args.trace_wall_seconds),
+            guest_installer_diag=not bool(args.no_guest_installer_diag),
+            stage_timeout_boot_sec=float(args.stage_timeout_boot),
+            stage_timeout_installer_sec=float(args.stage_timeout_installer),
+            stage_timeout_export_sec=float(args.stage_timeout_export),
+            stage_timeout_parse_sec=float(args.stage_timeout_parse),
+            stage_timeout_pack_sec=float(args.stage_timeout_pack),
+            diagnostics_level=str(args.diagnostics_level),
+            auto_wrap=bool(args.auto_wrap),
+            psadt_wrapper_config=(
+                PsadtWrapperConfig(psadt_toolkit_path=args.psadt_toolkit_path or None)
+                if args.auto_wrap
+                else None
+            ),
         ),
     )
 
     install_cmd_display = f"{os.path.basename(args.installer)} " + " ".join(args.silent_args)
-    if args.emit_manifest:
+
+    if args.auto_wrap and args.emit_manifest:
+        plan, manifest, was_wrapped = worker.run_trace_with_wrapper_fallback(
+            host_installer_path=args.installer,
+            install_command_display=install_cmd_display.strip(),
+            installer_filename=os.path.basename(args.installer),
+            install_exe_name=os.path.basename(args.installer),
+            silent_args=list(args.silent_args or []),
+        )
+        if was_wrapped:
+            logging.getLogger(__name__).info(
+                "Silent install failed; PSADT wrapper verified and ready."
+            )
+        manifest_path = Path(args.output) / args.manifest_name
+        manifest_path.write_text(manifest.to_json(), encoding="utf-8")
+        print(plan.to_json())
+    elif args.emit_manifest:
         plan, manifest = worker.run_trace_with_manifest(
             host_installer_path=args.installer,
             install_command_display=install_cmd_display.strip(),

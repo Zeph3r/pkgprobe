@@ -1,0 +1,14 @@
+PowerShell App Deployment Toolkit
+Copyright (c) PSAppDeployToolkit contributors
+
+Licensed under the Apache License, Version 2.0.
+
+This directory contains a minimal, pkgprobe-specific subset of the
+PowerShell App Deployment Toolkit (PSADT) function library. The original
+project is available at:
+
+  https://github.com/PSAppDeployToolkit/PSAppDeployToolkit
+
+These files provide the essential functions (Execute-Process,
+Show-InstallationWelcome, Write-Log, etc.) needed to wrap GUI-only
+Windows installers for Intune Win32 deployment.

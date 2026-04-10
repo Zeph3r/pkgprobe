@@ -88,6 +88,8 @@ class ProcmonConfig:
     backing_pml: str = r"C:\trace\logs\trace.pml"
     quiet: bool = True
     export_csv_timeout_sec: int = 180
+    profile: str = "balanced"
+    tuning_json: str = ""
 
 
 class ProcmonController:
@@ -112,7 +114,11 @@ class ProcmonController:
             args.append("/Quiet")
         args.extend(["/BackingFile", self._config.backing_pml])
 
-        logger.info("Starting ProcMon capture -> %s", self._config.backing_pml)
+        logger.info(
+            "Starting ProcMon capture -> %s (profile=%s)",
+            self._config.backing_pml,
+            self._config.profile,
+        )
         self._vmware.run_program_in_guest(
             self._config.procmon_path,
             args=args,

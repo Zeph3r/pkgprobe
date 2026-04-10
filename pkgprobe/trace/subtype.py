@@ -6,11 +6,12 @@ PE overlay heuristics. NSIS packs script into a single EXE with payload appended
 after the PE; literal markers may be missing when compression is used, so
 structural features (small stub + large overlay) are strong generic signals.
 
-Family remains msi | exe; subtype is nsis | inno | installshield | None.
+Family remains msi | exe; subtype identifies the installer framework.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -22,7 +23,38 @@ from pkgprobe.trace.evidence import (
     read_tail,
 )
 
-ExeSubtype = Literal["nsis", "inno", "installshield"]
+ExeSubtype = Literal["nsis", "inno", "installshield", "burn", "squirrel", "msix_wrapper"]
+
+
+@dataclass(frozen=True)
+class FamilyEvidence:
+    marker: str
+    strength: Literal["strong", "weak", "structural"]
+
+
+@dataclass(frozen=True)
+class FamilyCandidate:
+    family: ExeSubtype
+    confidence: float
+    evidence: list[FamilyEvidence]
+    rejected: bool = False
+    rejection_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FamilyVerdict:
+    chosen: FamilyCandidate | None
+    alternatives: list[FamilyCandidate]
+    confidence_tier: Literal["high", "medium", "low"]
+
+
+def _confidence_tier(confidence: float) -> Literal["high", "medium", "low"]:
+    if confidence >= 0.75:
+        return "high"
+    if confidence >= 0.55:
+        return "medium"
+    return "low"
+
 
 # Confidence levels (deterministic)
 _CONF_STRONG_MATCH = 0.75  # one strong textual NSIS marker
@@ -31,6 +63,10 @@ _CONF_WEAK_ONLY = 0.6  # weak textual marker only
 _CONF_STRUCTURAL = 0.65  # structural overlay heuristic alone (no product-specific)
 _CONF_COMBINED = 0.80  # textual + structural both present
 _CONF_NO_MARKERS = 0.3
+
+# Burn-specific confidence caps (lower than generic to reflect chaining risk)
+_CONF_BURN_STRONG = 0.70
+_CONF_BURN_MULTIPLE = 0.80
 
 # Structural heuristics: NSIS stub is small, payload (overlay) is appended after PE.
 # overlay_size > 256KB and stub_size < 512KB is typical for NSIS installers.
@@ -67,6 +103,32 @@ _INNO_MARKERS: tuple[bytes, ...] = (b"inno setup",)
 
 # InstallShield
 _INSTALLSHIELD_MARKERS: tuple[bytes, ...] = (b"installshield",)
+
+# WiX Burn / bootstrapper bundles
+_BURN_STRONG: tuple[bytes, ...] = (
+    b".wixburn",
+    b"wixbundlemanifest",
+    b"bootstrapperapplication",
+    b"bootstrappercore.dll",
+    b"wixstdba",
+)
+_BURN_WEAK = b"wix"
+
+# Squirrel (Electron / .NET app distribution)
+_SQUIRREL_STRONG: tuple[bytes, ...] = (
+    b"squirreltemp",
+    b"squirrel.windows",
+    b"squirrel-install",
+)
+_SQUIRREL_WEAK = b"squirrel"
+
+# MSIX / AppX wrapper EXEs
+_MSIX_MARKERS: tuple[bytes, ...] = (
+    b"appxmanifest.xml",
+    b"appxblockmap.xml",
+    b"appxbundlemanifest.xml",
+    b"add-appxpackage",
+)
 
 
 def _pe_end_of_last_section(data: bytes) -> int | None:
@@ -166,20 +228,46 @@ def _pattern_in_data(pat: bytes, data_lower: bytes, data_raw: bytes) -> bool:
     return pat_u16 in data_raw_lower
 
 
+def _count_markers(
+    markers: tuple[bytes, ...], data_lower: bytes, data_raw: bytes,
+) -> int:
+    return sum(1 for p in markers if _pattern_in_data(p, data_lower, data_raw))
+
+
+def _matched_markers(
+    markers: tuple[bytes, ...], data_lower: bytes, data_raw: bytes,
+) -> list[str]:
+    return [p.decode("ascii") for p in markers if _pattern_in_data(p, data_lower, data_raw)]
+
+
 def _detect_exe_subtype_from_bytes(data: bytes) -> tuple[ExeSubtype | None, float]:
     """
     Detect EXE sub-type from a byte buffer. MZ is not required here (caller checks).
-    Combines (1) NSIS format magic / textual markers and (2) structural overlay heuristics.
-    No product-specific fallbacks; structural = small PE stub + large appended payload.
+
+    Priority: Inno > InstallShield > Burn > Squirrel > MSIX > NSIS.
+    NSIS is checked last because its structural heuristic (small PE stub + large
+    overlay) is the broadest and most likely to false-positive over specific families.
     """
     if len(data) < 2:
         return None, _CONF_NO_MARKERS
 
-    # NSIS format signature in overlay (strongest textual signal)
-    if _NSIS_MAGIC_SIG_LE in data or _NSIS_MAGIC_SIG_BE in data:
-        return "nsis", _CONF_MULTIPLE_MATCH
+    # NSIS format signature in overlay — strongest NSIS-specific signal.
+    # Checked early but only returned after ruling out higher-priority families.
+    nsis_magic = _NSIS_MAGIC_SIG_LE in data or _NSIS_MAGIC_SIG_BE in data
 
     data_lower = _to_lower_ascii(data)
+
+    # --- gather evidence for every family ---
+    inno_count = _count_markers(_INNO_MARKERS, data_lower, data)
+    ishield_count = _count_markers(_INSTALLSHIELD_MARKERS, data_lower, data)
+
+    burn_strong_count = _count_markers(_BURN_STRONG, data_lower, data)
+    burn_weak_found = _pattern_in_data(_BURN_WEAK, data_lower, data)
+
+    squirrel_strong_count = _count_markers(_SQUIRREL_STRONG, data_lower, data)
+    squirrel_weak_found = _pattern_in_data(_SQUIRREL_WEAK, data_lower, data)
+
+    msix_count = _count_markers(_MSIX_MARKERS, data_lower, data)
 
     nsis_strong_found: set[bytes] = set()
     for pat in _NSIS_STRONG:
@@ -187,19 +275,33 @@ def _detect_exe_subtype_from_bytes(data: bytes) -> tuple[ExeSubtype | None, floa
             nsis_strong_found.add(pat)
     nsis_weak_found = _pattern_in_data(_NSIS_WEAK, data_lower, data)
 
-    inno_count = sum(1 for p in _INNO_MARKERS if _pattern_in_data(p, data_lower, data))
-    ishield_count = sum(1 for p in _INSTALLSHIELD_MARKERS if _pattern_in_data(p, data_lower, data))
-
-    # Structural: PE overlay heuristic (small stub + large payload typical of NSIS)
     nsis_structural = _has_nsis_structural_evidence(data)
 
-    # Prefer Inno then InstallShield then NSIS
+    # --- priority resolution ---
+
     if inno_count > 0:
         return "inno", _CONF_MULTIPLE_MATCH if inno_count > 1 else _CONF_STRONG_MATCH
+
     if ishield_count > 0:
         return "installshield", _CONF_MULTIPLE_MATCH if ishield_count > 1 else _CONF_STRONG_MATCH
 
-    # NSIS: combine textual and structural evidence; pick best confidence.
+    if burn_strong_count > 0:
+        return "burn", _CONF_MULTIPLE_MATCH if burn_strong_count >= 2 else _CONF_STRONG_MATCH
+    if burn_weak_found and not nsis_strong_found and not nsis_magic:
+        return "burn", _CONF_WEAK_ONLY
+
+    if squirrel_strong_count > 0:
+        return "squirrel", _CONF_MULTIPLE_MATCH if squirrel_strong_count >= 2 else _CONF_STRONG_MATCH
+    if squirrel_weak_found and not nsis_strong_found and not nsis_magic:
+        return "squirrel", _CONF_WEAK_ONLY
+
+    if msix_count > 0:
+        return "msix_wrapper", _CONF_MULTIPLE_MATCH if msix_count >= 2 else _CONF_STRONG_MATCH
+
+    # NSIS: magic first, then combine textual + structural evidence.
+    if nsis_magic:
+        return "nsis", _CONF_MULTIPLE_MATCH
+
     text_conf: float | None = None
     if nsis_strong_found:
         text_conf = _CONF_MULTIPLE_MATCH if len(nsis_strong_found) >= 2 else _CONF_STRONG_MATCH
@@ -224,6 +326,211 @@ def detect_exe_subtype_from_bytes(data: bytes) -> tuple[ExeSubtype | None, float
     if len(data) < 2 or data[:2] != b"MZ":
         return None, 0.0
     return _detect_exe_subtype_from_bytes(data)
+
+
+def _detect_exe_subtype_full_from_bytes(data: bytes) -> FamilyVerdict:
+    """
+    Full detection with evidence trail and rejected-family reasoning.
+    Accumulates FamilyCandidate for every family with evidence, picks winner
+    by priority, and marks losers with rejection reasons.
+
+    Priority: Inno > InstallShield > Burn > Squirrel > MSIX > NSIS.
+    Burn confidence is capped below other families to reflect chaining risk.
+    """
+    if len(data) < 2:
+        return FamilyVerdict(chosen=None, alternatives=[], confidence_tier="low")
+
+    nsis_magic = _NSIS_MAGIC_SIG_LE in data or _NSIS_MAGIC_SIG_BE in data
+    data_lower = _to_lower_ascii(data)
+
+    # Pre-compute NSIS strong presence for Burn/Squirrel weak-marker guards
+    has_nsis_strong = any(
+        _pattern_in_data(p, data_lower, data) for p in _NSIS_STRONG
+    )
+
+    all_candidates: list[FamilyCandidate] = []
+
+    # --- Inno ---
+    inno_hits = _matched_markers(_INNO_MARKERS, data_lower, data)
+    if inno_hits:
+        conf = _CONF_MULTIPLE_MATCH if len(inno_hits) > 1 else _CONF_STRONG_MATCH
+        all_candidates.append(FamilyCandidate(
+            family="inno", confidence=conf,
+            evidence=[FamilyEvidence(m, "strong") for m in inno_hits],
+        ))
+
+    # --- InstallShield ---
+    ishield_hits = _matched_markers(_INSTALLSHIELD_MARKERS, data_lower, data)
+    if ishield_hits:
+        conf = _CONF_MULTIPLE_MATCH if len(ishield_hits) > 1 else _CONF_STRONG_MATCH
+        all_candidates.append(FamilyCandidate(
+            family="installshield", confidence=conf,
+            evidence=[FamilyEvidence(m, "strong") for m in ishield_hits],
+        ))
+
+    # --- Burn (confidence capped) ---
+    burn_strong_hits = _matched_markers(_BURN_STRONG, data_lower, data)
+    burn_weak = _pattern_in_data(_BURN_WEAK, data_lower, data)
+
+    if burn_strong_hits:
+        conf = _CONF_BURN_MULTIPLE if len(burn_strong_hits) >= 2 else _CONF_BURN_STRONG
+        all_candidates.append(FamilyCandidate(
+            family="burn", confidence=conf,
+            evidence=[FamilyEvidence(m, "strong") for m in burn_strong_hits],
+        ))
+    elif burn_weak:
+        if not has_nsis_strong and not nsis_magic:
+            all_candidates.append(FamilyCandidate(
+                family="burn", confidence=_CONF_WEAK_ONLY,
+                evidence=[FamilyEvidence("wix", "weak")],
+            ))
+        else:
+            all_candidates.append(FamilyCandidate(
+                family="burn", confidence=_CONF_WEAK_ONLY,
+                evidence=[FamilyEvidence("wix", "weak")],
+                rejected=True,
+                rejection_reason="weak 'wix' marker overridden by NSIS strong evidence",
+            ))
+
+    # --- Squirrel ---
+    sq_strong_hits = _matched_markers(_SQUIRREL_STRONG, data_lower, data)
+    sq_weak = _pattern_in_data(_SQUIRREL_WEAK, data_lower, data)
+
+    if sq_strong_hits:
+        conf = _CONF_MULTIPLE_MATCH if len(sq_strong_hits) >= 2 else _CONF_STRONG_MATCH
+        all_candidates.append(FamilyCandidate(
+            family="squirrel", confidence=conf,
+            evidence=[FamilyEvidence(m, "strong") for m in sq_strong_hits],
+        ))
+    elif sq_weak:
+        if not has_nsis_strong and not nsis_magic:
+            all_candidates.append(FamilyCandidate(
+                family="squirrel", confidence=_CONF_WEAK_ONLY,
+                evidence=[FamilyEvidence("squirrel", "weak")],
+            ))
+        else:
+            all_candidates.append(FamilyCandidate(
+                family="squirrel", confidence=_CONF_WEAK_ONLY,
+                evidence=[FamilyEvidence("squirrel", "weak")],
+                rejected=True,
+                rejection_reason="weak 'squirrel' marker overridden by NSIS strong evidence",
+            ))
+
+    # --- MSIX ---
+    msix_hits = _matched_markers(_MSIX_MARKERS, data_lower, data)
+    if msix_hits:
+        conf = _CONF_MULTIPLE_MATCH if len(msix_hits) >= 2 else _CONF_STRONG_MATCH
+        all_candidates.append(FamilyCandidate(
+            family="msix_wrapper", confidence=conf,
+            evidence=[FamilyEvidence(m, "strong") for m in msix_hits],
+        ))
+
+    # --- NSIS ---
+    nsis_strong_matched = _matched_markers(_NSIS_STRONG, data_lower, data)
+    nsis_weak = _pattern_in_data(_NSIS_WEAK, data_lower, data)
+    nsis_structural = _has_nsis_structural_evidence(data)
+
+    nsis_ev: list[FamilyEvidence] = []
+    if nsis_magic:
+        nsis_ev.append(FamilyEvidence("nsis_magic_0xDEADBEEF", "strong"))
+    for m in nsis_strong_matched:
+        nsis_ev.append(FamilyEvidence(m, "strong"))
+    if nsis_weak and not nsis_strong_matched and not nsis_magic:
+        nsis_ev.append(FamilyEvidence("nsis", "weak"))
+    if nsis_structural:
+        nsis_ev.append(FamilyEvidence("nsis_structural_overlay", "structural"))
+
+    if nsis_ev:
+        if nsis_magic:
+            nsis_conf = _CONF_MULTIPLE_MATCH
+        elif nsis_strong_matched:
+            text_conf = (
+                _CONF_MULTIPLE_MATCH if len(nsis_strong_matched) >= 2
+                else _CONF_STRONG_MATCH
+            )
+            nsis_conf = max(text_conf, _CONF_COMBINED) if nsis_structural else text_conf
+        elif nsis_weak:
+            nsis_conf = (
+                max(_CONF_WEAK_ONLY, _CONF_COMBINED) if nsis_structural
+                else _CONF_WEAK_ONLY
+            )
+        else:
+            nsis_conf = _CONF_STRUCTURAL
+        all_candidates.append(FamilyCandidate(
+            family="nsis", confidence=nsis_conf, evidence=nsis_ev,
+        ))
+
+    # --- Priority resolution ---
+    priority_order: list[ExeSubtype] = [
+        "inno", "installshield", "burn", "squirrel", "msix_wrapper", "nsis",
+    ]
+
+    eligible = [c for c in all_candidates if not c.rejected]
+    pre_rejected = [c for c in all_candidates if c.rejected]
+
+    chosen: FamilyCandidate | None = None
+    alternatives: list[FamilyCandidate] = list(pre_rejected)
+
+    for family in priority_order:
+        match = next((c for c in eligible if c.family == family), None)
+        if match is None:
+            continue
+        if chosen is None:
+            chosen = match
+        else:
+            alternatives.append(FamilyCandidate(
+                family=match.family,
+                confidence=match.confidence,
+                evidence=match.evidence,
+                rejected=True,
+                rejection_reason=(
+                    f"outprioritized by {chosen.family}: "
+                    "higher-priority evidence present"
+                ),
+            ))
+
+    alternatives.sort(key=lambda c: c.confidence, reverse=True)
+    conf = chosen.confidence if chosen else _CONF_NO_MARKERS
+    return FamilyVerdict(
+        chosen=chosen, alternatives=alternatives,
+        confidence_tier=_confidence_tier(conf),
+    )
+
+
+def detect_exe_subtype_full(data: bytes) -> FamilyVerdict:
+    """
+    Full detection with evidence trail and alternatives.
+    Returns FamilyVerdict with chosen family, rejected alternatives, and
+    confidence tier for downstream gating.
+    Returns empty verdict (chosen=None, tier="low") if data missing MZ.
+    """
+    if len(data) < 2 or data[:2] != b"MZ":
+        return FamilyVerdict(chosen=None, alternatives=[], confidence_tier="low")
+    verdict = _detect_exe_subtype_full_from_bytes(data)
+
+    from pkgprobe.analyzers.telemetry import get_telemetry
+    tel = get_telemetry()
+    if tel.enabled:
+        tel.record(
+            "family_detected",
+            chosen_family=verdict.chosen.family if verdict.chosen else None,
+            chosen_confidence=verdict.chosen.confidence if verdict.chosen else None,
+            confidence_tier=verdict.confidence_tier,
+            alternatives=[
+                {"family": a.family, "confidence": a.confidence, "reason": a.rejection_reason}
+                for a in verdict.alternatives
+            ],
+            strong_evidence_count=sum(
+                1 for e in (verdict.chosen.evidence if verdict.chosen else [])
+                if e.strength == "strong"
+            ),
+            weak_evidence_count=sum(
+                1 for e in (verdict.chosen.evidence if verdict.chosen else [])
+                if e.strength == "weak"
+            ),
+        )
+
+    return verdict
 
 
 def detect_exe_subtype(path: Path) -> tuple[ExeSubtype | None, float]:

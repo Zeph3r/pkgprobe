@@ -23,6 +23,8 @@ class DetectionRule(BaseModel):
     value: str
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: List[Evidence] = Field(default_factory=list)
+    version: Optional[str] = None
+    version_operator: Optional[str] = None  # "ge" | "eq" | None (presence-only)
 
 
 class CveResult(BaseModel):
@@ -37,6 +39,36 @@ class CveResult(BaseModel):
     match_confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
 
+SilentViability = Literal["unknown", "likely", "unlikely"]
+InstallRecommendation = Literal["silent_may_work", "trace_recommended"]
+ConfidenceTier = Literal["high", "medium", "low"]
+DeploymentRisk = Literal["low", "moderate", "high"]
+NextStep = Literal["auto_package", "trace_recommended", "manual_review", "alternate_deployment_path"]
+PackagingTier = Literal["simple", "pro", "auto_wrap"]
+
+
+class FamilyResult(BaseModel):
+    """Structured family detection output with evidence and alternatives."""
+
+    family: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    confidence_tier: ConfidenceTier
+    evidence: List[Evidence] = Field(default_factory=list)
+    alternatives_considered: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class DeploymentAssessment(BaseModel):
+    """Operational viability separate from family identification."""
+
+    silent_viability: SilentViability
+    deployment_risk: DeploymentRisk
+    recommended_next_step: NextStep
+    packaging_tier: PackagingTier = "auto_wrap"
+    tier_reason: str = ""
+    suggested_command: str = ""
+    risk_factors: List[str] = Field(default_factory=list)
+
+
 class InstallPlan(BaseModel):
     input_path: str
     file_type: str  # "msi" | "exe" | "unknown"
@@ -44,6 +76,19 @@ class InstallPlan(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
 
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    """May include structured `preflight` key from EXE analysis (help probe, 7z listing)."""
+
+    family_result: Optional[FamilyResult] = None
+    """Structured family detection with evidence trail and rejected alternatives."""
+
+    silent_viability: SilentViability = "unknown"
+    """Heuristic: how likely a silent/unattended install is without tracing."""
+
+    recommendation: InstallRecommendation = "silent_may_work"
+    """`trace_recommended` when silent is a poor bet — prefer VM trace / repackage."""
+
+    deployment: Optional[DeploymentAssessment] = None
+    """Operational viability assessment, separate from family classification."""
 
     install_candidates: List[CommandCandidate] = Field(default_factory=list)
     uninstall_candidates: List[CommandCandidate] = Field(default_factory=list)

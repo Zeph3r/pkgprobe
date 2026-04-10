@@ -84,7 +84,7 @@ Statically analyzes an MSI or EXE installer and produces an **InstallPlan**: ins
 **Usage:**
 
 ```text
-pkgprobe analyze PATH [--out PATH] [--quiet] [--cve-check]
+pkgprobe analyze PATH [--out PATH] [--quiet] [--verbose] [--cve-check] [--telemetry]
 ```
 
 **Arguments**
@@ -99,24 +99,40 @@ pkgprobe analyze PATH [--out PATH] [--quiet] [--cve-check]
 |--------|-------|---------|-------------|
 | `--out` | `-o` | `./installplan.json` | Path where the InstallPlan JSON is written. |
 | `--quiet` | `-q` | `false` | Suppress banner (for CI and scripting). |
+| `--verbose` | `-V` | `false` | Show full detail tables (evidence, all candidates, detection rules, notes, alternatives). |
 | `--cve-check` | — | `false` | Query NVD (NIST) for known CVEs affecting the identified product. Best-effort; requires product metadata. Uses NVD API v2. |
+| `--telemetry` | — | `false` | Emit internal analyzer telemetry as JSON lines to stderr (diagnostic, not user analytics). |
 
 **Behavior**
 
+- **MSI first:** Extension and MSI magic are treated as **MSI** — predictable `msiexec` silent patterns. InstallPlan sets `silent_viability` to `likely` and `recommendation` to `silent_may_work`. Includes deployment assessment and packaging tier (Simple when ProductCode present, Pro otherwise).
 - **MSI:** Reads Property table (ProductCode, UpgradeCode, ProductVersion, ProductName, Manufacturer) via Windows Installer APIs. Produces high-confidence install (`msiexec /i ... /qn`) and uninstall (`msiexec /x {ProductCode} /qn`) candidates and MSI ProductCode detection rules.
-- **EXE:** Uses signature-based heuristics (Inno Setup, NSIS, InstallShield, Burn, etc.) and returns installer type, confidence, and heuristic install/uninstall commands. No execution.
+- **EXE:** Uses signature-based heuristics (Inno Setup, NSIS, InstallShield, Burn, etc.), then **preflight** on Windows: optional `/?` help capture, optional **7-Zip** (`7z.exe`) listing to spot nested `.msi`, `setup.ini`, Squirrel `app-*.exe`, WiX/Burn hints. No nested installer is executed. InstallPlan includes `silent_viability` (`unknown` \| `likely` \| `unlikely`), `recommendation` (`silent_may_work` \| `trace_recommended`), deployment risk, and packaging tier. When silent is a poor bet, prefer **VM trace** or repackage instead of trying more silent flags.
 - **CVE check (optional):** With `--cve-check`, queries NVD API v2 (keyword-first for MSI, CPE fallback when all of Manufacturer, ProductName, ProductVersion exist and keyword is low-confidence). EXE: keyword only when ProductName metadata exists; otherwise skipped. Results are cached under `~/.pkgprobe/cache/cve/` for 24 hours. Up to 20 CVEs, sorted by CVSS and publish date. Optional `NVD_API_KEY` env improves rate limits.
 
 **Output**
 
-- Writes InstallPlan JSON to the path given by `--out` (or `installplan.json`).
-- Prints a human-readable summary: type, confidence, metadata table, install/uninstall candidates, detection rules, notes.
+- Writes InstallPlan JSON to the path given by `--out` (or `installplan.json`). JSON always contains full detail regardless of `--verbose`.
+- **Default (clean summary):** Installer type + confidence tier (High/Medium/Low), deployment risk, recommended next step with actionable commands, packaging tier with reason.
+- **With `--verbose`:** Additionally shows metadata table, all install/uninstall candidates, detection rules, notes, family evidence, and rejected alternatives.
+
+**Packaging tiers**
+
+The packaging tier classifies how difficult the installer is to package silently:
+
+| Tier | Families | Risk | What it means |
+|------|----------|------|---------------|
+| **Simple** | NSIS, Inno (high confidence), MSI with ProductCode | Low | Silent install likely works out of the box |
+| **Pro** | InstallShield, MSIX/AppX wrapper, medium-confidence families | Moderate | May need syntax trial or alternate deployment path |
+| **Auto-Wrap** | Burn, Squirrel, unknown EXE, high-risk families | High | Trace or automated repackaging recommended |
 
 **Example**
 
 ```powershell
-pkgprobe analyze .\setup.exe --out installplan.json
+pkgprobe analyze .\setup.exe
+pkgprobe analyze .\setup.exe --verbose
 pkgprobe analyze .\product.msi -o plan.json -q
+pkgprobe analyze .\setup.exe --cve-check --telemetry
 ```
 
 ---
@@ -204,6 +220,8 @@ JSON written to `--out` (default `installplan.json`). Main fields:
 | `installer_type` | string | e.g. `"MSI"`, `"Inno Setup"`, `"NSIS"`. |
 | `confidence` | number | 0–1. |
 | `metadata` | object | File or MSI properties. |
+| `family_result` | object or null | `{ "family", "confidence", "confidence_tier", "evidence", "alternatives_considered" }`. Structured family detection with evidence trail. |
+| `deployment` | object or null | `{ "silent_viability", "deployment_risk", "recommended_next_step", "packaging_tier", "tier_reason", "suggested_command", "risk_factors" }`. Operational viability assessment. |
 | `install_candidates` | array | `{ "command", "confidence", "evidence" }`. |
 | `uninstall_candidates` | array | Same shape. |
 | `detection_rules` | array | `{ "kind", "value", "confidence", "evidence" }`. |

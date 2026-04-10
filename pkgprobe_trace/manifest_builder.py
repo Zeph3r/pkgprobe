@@ -1,17 +1,18 @@
 """
-Build a VerifiedTraceManifest from an InstallPlan + diff output.
+Build draft detection previews from an InstallPlan + diff output.
 
-Heuristics focus on Intune-friendly detection:
-- Prefer Uninstall registry keys when present
-- Prefer stable Program Files paths over temp/cache paths
-- Include service/task hints as additional candidates
+Authoritative eligibility scoring and Intune packaging gating run only on
+api.pkgprobe.io (see backend app/services/verification_policy.py).
+
+OSS emits:
+- trace_contract.json (install plan + raw diff for the API policy engine)
+- verified_manifest.json as a **draft** preview (draft=True, verified=False).
 """
 
 from __future__ import annotations
 
-import os
 import re
-from dataclasses import asdict
+import warnings
 from typing import List
 
 from .diff_engine import DiffResult, FileChange, RegistryChange
@@ -24,19 +25,20 @@ _MSI_GUID_IN_PATH_RE = re.compile(
     r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}",
     re.IGNORECASE,
 )
+_EXTRACT_GUID_RE = re.compile(
+    r"(\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\})",
+    re.IGNORECASE,
+)
+_DISPLAY_VERSION_RE = re.compile(r"\\DisplayVersion$", re.IGNORECASE)
 _PROGRAM_FILES_RE = re.compile(r"\\Program Files( \\(x86\\))?\\", re.IGNORECASE)
 _VMWARE_PF_RE = re.compile(
     r"\\Program Files( \(x86\))?\\(Common Files\\)?VMware(\\|$)",
     re.IGNORECASE,
 )
 _TEMP_HINT_RE = re.compile(r"\\(Temp|AppData\\Local\\Temp)\\", re.IGNORECASE)
-_NOISY_HINT_RE = re.compile(r"\\(Windows\\Prefetch|Windows\\Temp|ProgramData\\Package Cache)\\", re.IGNORECASE)
 
 
 def _parse_silent_args_from_install_command(install_command: str) -> List[str]:
-    # install_command is stored as a display string; keep this conservative.
-    # Prefer callers (CLI/backend) to pass args explicitly, but this gives a
-    # fallback so manifest is still useful.
     parts = install_command.strip().split()
     if len(parts) <= 1:
         return []
@@ -55,7 +57,6 @@ def _best_file_candidates(files: List[FileChange], limit: int = 5) -> List[Detec
             continue
         if not _PROGRAM_FILES_RE.search(p):
             continue
-        # Prefer created files (often main exe/dll) over modified.
         base_conf = 0.75 if f.change_type == "create" else 0.6
         cands.append(
             DetectionCandidate(
@@ -70,23 +71,41 @@ def _best_file_candidates(files: List[FileChange], limit: int = 5) -> List[Detec
     return cands
 
 
+def _build_version_index(registry: List[RegistryChange]) -> dict[str, str]:
+    """Map lowercased Uninstall key prefix to the GUID found in DisplayVersion write paths."""
+    idx: dict[str, str] = {}
+    for r in registry:
+        path = r.path or ""
+        if not _DISPLAY_VERSION_RE.search(path):
+            continue
+        if not _UNINSTALL_RE.search(path):
+            continue
+        m = _EXTRACT_GUID_RE.search(path)
+        if not m:
+            continue
+        key_prefix = path[: path.lower().rfind("\\displayversion")].lower()
+        idx[key_prefix] = m.group(1)
+    return idx
+
+
 def _msi_product_code_candidates(registry: List[RegistryChange], limit: int = 5) -> List[DetectionCandidate]:
     out: List[DetectionCandidate] = []
-    seen = set()
+    seen: set[str] = set()
     for r in registry:
         path = r.path or ""
         if not path or not _UNINSTALL_RE.search(path):
             continue
         if not _MSI_GUID_IN_PATH_RE.search(path):
             continue
-        lk = path.lower()
+        base = path.split("\\DisplayVersion")[0] if "\\DisplayVersion" in path else path
+        lk = base.lower()
         if lk in seen:
             continue
         seen.add(lk)
         out.append(
             DetectionCandidate(
                 type="msi_product_code",
-                value=path,
+                value=base,
                 confidence=0.95,
                 rationale="MSI ProductCode (GUID under Uninstall)",
             )
@@ -105,9 +124,7 @@ def _best_uninstall_key_candidates(registry: List[RegistryChange], limit: int = 
         if _UNINSTALL_RE.search(path):
             if _MSI_GUID_IN_PATH_RE.search(path):
                 continue
-            # Registry CSV paths may include value names. Keep full path; detection can use Test-Path.
             keys.append(path)
-    # Deduplicate while keeping order
     seen = set()
     uniq = []
     for k in keys:
@@ -157,6 +174,63 @@ def _task_candidates(diff: DiffResult, limit: int = 5) -> List[DetectionCandidat
     return out
 
 
+def collect_detection_candidates(
+    *, plan: InstallPlan, diff: DiffResult, product_version: str = "",
+) -> List[DetectionCandidate]:
+    """Heuristic detection candidates for local preview only (not eligibility scoring)."""
+    msi_cands = _msi_product_code_candidates(diff.registry)
+    if product_version:
+        msi_cands = [
+            DetectionCandidate(
+                type=c.type,
+                value=c.value,
+                confidence=c.confidence,
+                rationale=c.rationale,
+                version=product_version,
+                version_operator="ge",
+            )
+            for c in msi_cands
+        ]
+    candidates: List[DetectionCandidate] = []
+    candidates.extend(msi_cands)
+    candidates.extend(_best_uninstall_key_candidates(diff.registry))
+    candidates.extend(_best_file_candidates(diff.files))
+    candidates.extend(_service_candidates(diff))
+    candidates.extend(_task_candidates(diff))
+    return candidates
+
+
+def build_draft_manifest(
+    *,
+    plan: InstallPlan,
+    diff: DiffResult,
+    installer_filename: str,
+    install_exe_name: str,
+    silent_args: List[str] | None = None,
+    product_version: str = "",
+    product_code: str = "",
+) -> VerifiedTraceManifest:
+    """Non-authoritative manifest preview; packaging eligibility requires api.pkgprobe.io."""
+    silent = silent_args if silent_args is not None else _parse_silent_args_from_install_command(plan.install_command)
+    candidates = collect_detection_candidates(plan=plan, diff=diff, product_version=product_version)
+    notes = [
+        "Draft preview only. Authoritative verified manifest and Intune eligibility are produced by api.pkgprobe.io.",
+    ]
+    return VerifiedTraceManifest(
+        installer_filename=installer_filename,
+        install_exe_name=install_exe_name,
+        silent_args=list(silent),
+        detection_candidates=candidates,
+        verified=False,
+        verification_errors=[],
+        notes=notes,
+        draft=True,
+        verification_authority="local_draft",
+        product_version=product_version,
+        product_code=product_code,
+    )
+
+
 def build_verified_manifest(
     *,
     plan: InstallPlan,
@@ -164,62 +238,27 @@ def build_verified_manifest(
     installer_filename: str,
     install_exe_name: str,
     silent_args: List[str] | None = None,
+    verification_strictness: str = "balanced",
+    product_version: str = "",
+    product_code: str = "",
 ) -> VerifiedTraceManifest:
-    silent = silent_args if silent_args is not None else _parse_silent_args_from_install_command(plan.install_command)
+    """
+    Deprecated: OSS no longer performs eligibility scoring.
 
-    candidates: List[DetectionCandidate] = []
-    candidates.extend(_msi_product_code_candidates(diff.registry))
-    candidates.extend(_best_uninstall_key_candidates(diff.registry))
-    candidates.extend(_best_file_candidates(diff.files))
-    candidates.extend(_service_candidates(diff))
-    candidates.extend(_task_candidates(diff))
-
-    # ---- Verification criteria (strict) ---------------------------------
-    #
-    # For `.intunewin` packaging, we require at least one *strong* detection
-    # anchor that is stable across machines:
-    # - Uninstall registry key activity (preferred)
-    # - Program Files file path (acceptable)
-    #
-    # Service/task-only detection is considered too weak by default.
-    verification_errors: List[str] = []
-    notes: List[str] = []
-
-    strong = []
-    for c in candidates:
-        if c.type == "msi_product_code":
-            strong.append(c)
-        elif c.type == "registry_key" and _UNINSTALL_RE.search(c.value):
-            strong.append(c)
-        elif c.type == "file_exists" and _PROGRAM_FILES_RE.search(c.value) and not _TEMP_HINT_RE.search(c.value):
-            strong.append(c)
-
-    # Filter out obviously noisy anchors
-    strong = [c for c in strong if not _NOISY_HINT_RE.search(c.value)]
-
-    if not silent:
-        verification_errors.append("No silent args were provided/detected; refusing to package without a verified silent command.")
-
-    if not strong:
-        verification_errors.append(
-            "No strong detection anchors found (need Uninstall registry key or Program Files file)."
-        )
-
-    # Require at least one high-confidence anchor.
-    if strong and max(float(c.confidence) for c in strong) < 0.85:
-        verification_errors.append("Detection anchors exist but confidence is too low (<0.85).")
-
-    # If we found only service/task candidates, be explicit.
-    if not strong and (diff.services or diff.scheduled_tasks):
-        notes.append("Only service/task hints were detected; these are not sufficient alone for Intune detection.")
-
-    return VerifiedTraceManifest(
+    Returns the same as :func:`build_draft_manifest` (verification_strictness is ignored).
+    """
+    warnings.warn(
+        "build_verified_manifest is deprecated; use build_draft_manifest. "
+        "Eligibility scoring runs on api.pkgprobe.io only.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return build_draft_manifest(
+        plan=plan,
+        diff=diff,
         installer_filename=installer_filename,
         install_exe_name=install_exe_name,
-        silent_args=list(silent),
-        detection_candidates=candidates,
-        verified=len(verification_errors) == 0,
-        verification_errors=verification_errors,
-        notes=notes,
+        silent_args=silent_args,
+        product_version=product_version,
+        product_code=product_code,
     )
-

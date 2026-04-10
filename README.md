@@ -41,33 +41,56 @@ Packaging software on Windows is still more art than science:
 
 ------------------------------------------------------------------------
 
-## What it does (v0.1)
+## What it does (v0.3)
 
 Given an `.msi` or `.exe`, pkgprobe outputs a structured **install
 plan** containing:
 
 ### Installer intelligence
 
--   Detects installer type (MSI, Inno Setup, NSIS, InstallShield, Burn,
-    Squirrel, etc.)
--   Confidence-scored classification with supporting evidence
+-   Detects installer type (MSI, Inno Setup, NSIS, InstallShield,
+    WiX Burn, Squirrel, MSIX/AppX Wrapper)
+-   Confidence-scored classification with structured evidence trail
+-   Preflight probes (help screen, 7-Zip listing) promote detection
+    when byte-level markers alone are insufficient
+-   Family explainability: see which families were considered and
+    why the winner was chosen
+
+### Deployment assessment
+
+-   **Packaging tier** classification: Simple, Pro, or Auto-Wrap
+-   **Deployment risk** rating (Low / Moderate / High)
+-   **Actionable next steps** based on detected difficulty
+-   Separate from family identification --- the same family can
+    have different deployment viability depending on confidence
 
 ### Command inference
 
 -   Probable silent install commands, ranked by confidence
--   Probable uninstall commands
+-   Family-specific uninstall commands (Inno, NSIS, InstallShield,
+    Burn, Squirrel, MSIX/AppX, and generic fallbacks)
 -   Evidence explaining why each command was suggested
 
 ### Detection guidance
 
--   MSI ProductCode--based detection (when available)
+-   MSI ProductCode-based detection (when available)
+-   Family-aware detection rules: registry ARP checks, `file_exists`
+    for installer-specific uninstallers, registry key for Burn bundles,
+    PowerShell `Get-AppxPackage` for MSIX/AppX
 -   Follow-up guidance for improving detection accuracy
 -   Designed to integrate cleanly into Intune / SCCM detection logic
 
 ### Automation-friendly output
 
 -   JSON output suitable for pipelines and tooling
--   Human-readable CLI summary for engineers
+-   Clean CLI summary by default; `--verbose` for full detail tables
+-   Internal analyzer telemetry (`--telemetry`) for diagnostic logging
+
+### Static analyze (MSI-first, then EXE)
+
+-   **MSI** is classified first and gets predictable `msiexec` guidance.
+    Includes deployment assessment and packaging tier.
+-   **EXE** adds optional preflight on Windows (`/?` help, **7-Zip** listing for nested `.msi` / Squirrel / `setup.ini` hints). InstallPlan includes `silent_viability`, `recommendation`, deployment risk, and packaging tier; when silent is unreliable, the tool steers you toward **VM trace** instead of more silent-flag guesses.
 
 ### Optional runtime trace + packaging
 
@@ -84,11 +107,13 @@ plan** containing:
     `--host-procmon` (local `procmon.exe`) instead of exporting only in the guest
 -   **Debugging:** `--pause-after` skips the cleanup snapshot revert so you can
     inspect the VM
--   Produces a **verified trace manifest** with strong detection anchors
-    (including **MSI ProductCode**-style `Uninstall\{GUID}` keys when seen)
-    and eligibility reasons
--   `pkgprobe-trace pack-intunewin` can generate `.intunewin` artifacts
-    from verified traces
+-   Writes **`trace_contract.json`** (install plan + raw diff) for upstream
+    services and a **draft** `verified_manifest.json` (local preview only;
+    **authoritative** eligibility + Intune packaging gating runs on
+    **api.pkgprobe.io**)
+-   `pkgprobe-trace pack-intunewin` can build `.intunewin` only with
+    **authoritative** verification (from the cloud API trace flow) or via
+    unsafe `--allow-unverified` / `--community-pack` for local experiments
 
 **Safety-first by design**\
 Default `pkgprobe analyze` is still **static analysis only** (no execution).\
@@ -99,21 +124,30 @@ Runtime execution is opt-in and isolated in a disposable VM workflow.
 ## Example
 
 ``` powershell
-pkgprobe analyze .\setup.exe --out installplan.json
+pkgprobe analyze .\setup.exe
 ```
 
-![demo1](https://github.com/user-attachments/assets/7426fbbf-48f4-4448-80ca-7bc5ff9936ec)
+Default output (clean summary):
 
-CLI summary:
+```
+  Installer: Inno Setup               Confidence: High
+  Deployment Risk: Low
 
-    Type: Inno Setup (confidence 0.92)
+  Recommended next step:
+  -> Try silent install: "setup.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-
 
-    Install candidates:
-      setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP- (0.88)
-      setup.exe /SILENT /SUPPRESSMSGBOXES /NORESTART /SP-     (0.62)
+  Packaging tier: Simple
+  (Well-known silent switches; high detection confidence)
 
-    Uninstall candidates:
-      unins000.exe /VERYSILENT (0.55)
+  Wrote: installplan.json
+```
+
+Add `--verbose` (`-V`) for full detail tables (evidence, all candidates,
+detection rules, notes, alternatives):
+
+``` powershell
+pkgprobe analyze .\setup.exe --verbose
+```
 
 Generated `installplan.json` (excerpt):
 
@@ -121,9 +155,17 @@ Generated `installplan.json` (excerpt):
 {
   "installer_type": "Inno Setup",
   "confidence": 0.92,
+  "deployment": {
+    "silent_viability": "likely",
+    "deployment_risk": "low",
+    "recommended_next_step": "auto_package",
+    "packaging_tier": "simple",
+    "tier_reason": "Well-known silent switches; high detection confidence",
+    "suggested_command": "\"setup.exe\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
+  },
   "install_candidates": [
     {
-      "command": "setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-",
+      "command": "\"setup.exe\" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-",
       "confidence": 0.88
     }
   ]
@@ -186,7 +228,18 @@ For runtime tracing and Intune packaging setup, see:
   ------------- -------- -----------------------------------------------------
   MSI           ✅       Metadata parsed via Windows Installer APIs
   EXE           ✅       Heuristic detection via string & signature analysis
-  MSIX / AppX   🔍       Detection hints only (wrapper detection)
+  MSIX / AppX   🔍       EXE wrapper detection + PowerShell guidance
+
+### EXE installer families detected
+
+  Family            Byte markers     Preflight (7z)   Install switches   Uninstall   Detection rules
+  ----------------- --------------- ---------------- ------------------ ----------- ----------------
+  NSIS              ✅               —                ✅                  ✅           file_exists
+  Inno Setup        ✅               —                ✅                  ✅           file_exists
+  InstallShield     ✅               —                ✅                  ✅           ARP registry
+  WiX Burn          ✅               ✅                ✅                  ✅           registry_key
+  Squirrel          ✅               ✅                ✅                  ✅           file_exists
+  MSIX/AppX Wrapper ✅               —                ✅                  ✅           powershell
 
 ------------------------------------------------------------------------
 
@@ -194,10 +247,12 @@ For runtime tracing and Intune packaging setup, see:
 
 pkgprobe combines:
 
--   Static string extraction (ASCII + UTF-16LE)
--   Known installer signature patterns
--   Heuristic confidence scoring
--   Evidence tracking (matched strings, metadata clues)
+-   Static string extraction (ASCII + UTF-16LE) for six installer families
+-   PE overlay / structural heuristics (NSIS payload detection)
+-   Optional preflight probes (help screen, 7-Zip listing) that promote
+    detection when byte markers alone are ambiguous
+-   Heuristic confidence scoring (0–1, deterministic)
+-   Evidence tracking (matched strings, metadata clues, preflight hints)
 
 This keeps analysis **fast, safe, and explainable**.
 
@@ -218,25 +273,24 @@ This keeps analysis **fast, safe, and explainable**.
 
 ## Roadmap
 
-### v0.2.0 (next)
+### v0.3.0 (current)
 
-**CLI UX**
+-   Packaging tier classification (Simple / Pro / Auto-Wrap)
+-   Deployment risk assessment per family
+-   Clean default CLI output with `--verbose` for detail
+-   Internal analyzer telemetry (`--telemetry`)
+-   Family explainability (evidence, alternatives considered)
+-   Burn confidence conservatism, Squirrel output nuance
+-   MSIX/AppX early branching with native deployment guidance
+-   MSI deployment assessment and tier
 
--   JSON to stdout -- Support `pkgprobe analyze <file> --format json`
-    (or `-o -`) for pipeline consumption
--   `--summary-only` -- Print only human summary (no file output)
--   Exit codes -- Standardized scripting-friendly exit codes
--   Subcommand examples in `--help`
+### Next
 
-**Output & format**
-
--   `--format yaml` -- Optional YAML install plan output
-
-**Later (v0.3.0+)**
-
+-   Cloud API at `api.pkgprobe.io` (analyze, trace, auto-wrap)
+-   Self-serve billing (Stripe) with tier-based gating
+-   CLI cloud commands (`pkgprobe cloud-wrap`, `pkgprobe upgrade`)
 -   install4j / Java-based installer detection
 -   Partial-read scanning for very large EXEs
--   Cloud VM backends for trace workers
 -   Queue-native multi-job orchestration for trace + packaging
 
 ------------------------------------------------------------------------

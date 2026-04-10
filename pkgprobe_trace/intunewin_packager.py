@@ -28,6 +28,23 @@ class IntuneWinPackagerError(RuntimeError):
     pass
 
 
+def _wow6432_sibling(reg_path: str) -> str:
+    """Return the WOW6432Node counterpart of an Uninstall registry path, or empty string."""
+    needle = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\"
+    lower = reg_path.lower()
+
+    if "wow6432node" in lower:
+        return ""
+
+    for prefix in ("HKLM:\\", "HKLM\\"):
+        target = prefix + needle
+        if lower.startswith(target.lower()):
+            suffix = reg_path[len(target):]
+            return prefix + "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\" + suffix
+
+    return ""
+
+
 @dataclass(frozen=True)
 class IntuneWinPackagerConfig:
     intunewin_util_path: str = "IntuneWinAppUtil.exe"
@@ -60,6 +77,11 @@ class IntuneWinPackager:
             raise IntuneWinPackagerError(f"manifest not found: {manifest_path}")
 
         manifest = VerifiedTraceManifest.from_json(manifest_path.read_text(encoding="utf-8"))
+        if getattr(manifest, "draft", False) and not self._config.allow_unverified:
+            raise IntuneWinPackagerError(
+                "Draft manifest from local OSS trace; .intunewin packaging requires "
+                "authoritative verification from api.pkgprobe.io (or use --allow-unverified / --community-pack for unsafe local-only use)."
+            )
         if not manifest.verified and not self._config.allow_unverified:
             msg = "Manifest is not verified; refusing to package."
             if manifest.verification_errors:
@@ -89,7 +111,15 @@ class IntuneWinPackager:
 
         install_ps1 = staging_dir / "install.ps1"
         detect_ps1 = staging_dir / "detect.ps1"
-        install_ps1.write_text(self._render_install_ps1(staged_installer.name, manifest.silent_args), encoding="utf-8")
+        install_ps1.write_text(
+            self._render_install_ps1(
+                staged_installer.name,
+                manifest.silent_args,
+                product_code=manifest.product_code,
+                product_version=manifest.product_version,
+            ),
+            encoding="utf-8",
+        )
         detect_ps1.write_text(self._render_detect_ps1(manifest.detection_candidates), encoding="utf-8")
 
         # IntuneWinAppUtil creates a file named <setupfile>.intunewin in output dir.
@@ -142,28 +172,121 @@ class IntuneWinPackager:
                 f"(stdout={proc.stdout!r}, stderr={proc.stderr!r})"
             )
 
-    @staticmethod
-    def _render_install_ps1(installer_filename: str, silent_args: list[str]) -> str:
-        # Use Start-Process -Wait for deterministic completion.
-        args = " ".join([f'"{a}"' if " " in a else a for a in (silent_args or [])])
-        return (
-            "$ErrorActionPreference = 'Stop'\n"
-            "$here = Split-Path -Parent $MyInvocation.MyCommand.Path\n"
-            f"$installer = Join-Path $here '{installer_filename}'\n"
-            f"$args = @({', '.join([repr(a) for a in (silent_args or [])])})\n"
-            "Write-Host \"Running installer: $installer\"\n"
-            "if ($args.Count -gt 0) {\n"
-            "  $p = Start-Process -FilePath $installer -ArgumentList $args -Wait -PassThru\n"
-            "} else {\n"
-            "  $p = Start-Process -FilePath $installer -Wait -PassThru\n"
-            "}\n"
-            "exit $p.ExitCode\n"
+    def pack_from_wrapper(
+        self,
+        *,
+        wrapper_dir: Path,
+        output_dir: Path,
+        manifest: VerifiedTraceManifest | None = None,
+    ) -> Path:
+        """
+        Package a PSADT wrapper directory as .intunewin.
+
+        Uses ``Deploy-Application.ps1`` as the setup file instead of
+        the raw installer, which is already staged under ``Files/``.
+        """
+        wrapper_dir = Path(wrapper_dir)
+        output_dir = Path(output_dir)
+
+        if not wrapper_dir.is_dir():
+            raise IntuneWinPackagerError(f"wrapper_dir not found: {wrapper_dir}")
+
+        deploy_ps1 = wrapper_dir / "Deploy-Application.ps1"
+        if not deploy_ps1.is_file():
+            raise IntuneWinPackagerError(
+                f"Deploy-Application.ps1 not found in wrapper: {wrapper_dir}"
+            )
+
+        if manifest and not manifest.verified and not self._config.allow_unverified:
+            raise IntuneWinPackagerError(
+                "Wrapper manifest is not verified; refusing to package."
+            )
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        produced = output_dir / "Deploy-Application.ps1.intunewin"
+        if produced.exists() and not self._config.overwrite:
+            raise IntuneWinPackagerError(
+                f"Output exists (use --overwrite): {produced}"
+            )
+
+        self._run_intunewin_util(
+            source_dir=wrapper_dir,
+            setup_file="Deploy-Application.ps1",
+            output_dir=output_dir,
         )
+
+        if not produced.is_file():
+            matches = list(output_dir.glob("*.intunewin"))
+            if len(matches) == 1:
+                return matches[0]
+            raise IntuneWinPackagerError(
+                f"Expected .intunewin not found at: {produced}"
+            )
+
+        return produced
+
+    @staticmethod
+    def _render_install_ps1(
+        installer_filename: str,
+        silent_args: list[str],
+        product_code: str = "",
+        product_version: str = "",
+    ) -> str:
+        args_literal = ', '.join([repr(a) for a in (silent_args or [])])
+
+        lines = [
+            "$ErrorActionPreference = 'Stop'",
+            "$here = Split-Path -Parent $MyInvocation.MyCommand.Path",
+            f"$installer = Join-Path $here '{installer_filename}'",
+            f"$installArgs = @({args_literal})",
+        ]
+
+        if product_code:
+            lines += [
+                "",
+                f'$productCode = "{product_code}"',
+                "$uninstPaths = @(",
+                '    "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$productCode"',
+                '    "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$productCode"',
+                ")",
+                "$existing = $null",
+                "foreach ($p in $uninstPaths) {",
+                "    $existing = Get-ItemProperty -Path $p -ErrorAction SilentlyContinue",
+                "    if ($existing) { break }",
+                "}",
+                "if ($existing) {",
+                '    Write-Host "Removing existing version: $($existing.DisplayVersion)"',
+                '    $u = Start-Process -FilePath "msiexec.exe" -ArgumentList "/x","$productCode","/qn","/norestart" -Wait -PassThru',
+                "    if ($u.ExitCode -ne 0 -and $u.ExitCode -ne 3010) {",
+                '        Write-Host "Uninstall failed: exit $($u.ExitCode)"',
+                "        exit $u.ExitCode",
+                "    }",
+                "}",
+            ]
+
+        lines += [
+            "",
+            'Write-Host "Running installer: $installer"',
+            "if ($installArgs.Count -gt 0) {",
+            "    $p = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru",
+            "} else {",
+            "    $p = Start-Process -FilePath $installer -Wait -PassThru",
+            "}",
+            "$exitCode = $p.ExitCode",
+            "if ($exitCode -eq 3010) { $exitCode = 0 }",
+            "exit $exitCode",
+        ]
+
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _normalize_reg_path(path: str) -> str:
+        """Convert ProcMon-style registry paths to PowerShell drive notation."""
+        return path.replace("HKLM\\", "HKLM:\\").replace("HKCU\\", "HKCU:\\")
 
     @staticmethod
     def _render_detect_ps1(candidates: list[DetectionCandidate]) -> str:
-        # Intune detection scripts signal "installed" by exiting 0.
-        # We choose the highest confidence candidate.
         best = None
         for c in candidates:
             if best is None or float(c.confidence) > float(best.confidence):
@@ -172,16 +295,46 @@ class IntuneWinPackager:
         if best is None:
             return "exit 1\n"
 
+        version = getattr(best, "version", "") or ""
+        version_op = getattr(best, "version_operator", "") or ""
+
         if best.type in ("registry_key", "msi_product_code"):
-            # ProcMon exports registry keys in a variety of formats; normalize for PowerShell.
-            path = best.value
-            # Convert common prefixes
-            path = path.replace("HKLM\\", "HKLM:\\").replace("HKCU\\", "HKCU:\\")
+            path = IntuneWinPackager._normalize_reg_path(best.value)
+
+            if version and version_op in ("ge", "eq"):
+                op_ps = "-ge" if version_op == "ge" else "-eq"
+                wow_path = _wow6432_sibling(path)
+                lines = [
+                    "$ErrorActionPreference = 'SilentlyContinue'",
+                    f"$paths = @(",
+                    f'    "{path}"',
+                ]
+                if wow_path:
+                    lines.append(f'    "{wow_path}"')
+                lines += [
+                    ")",
+                    "foreach ($p in $paths) {",
+                    "    $entry = Get-ItemProperty -Path $p -ErrorAction SilentlyContinue",
+                    "    if ($entry -and $entry.DisplayVersion) {",
+                    "        try {",
+                    "            $installed = [version]$entry.DisplayVersion",
+                    f'            $target = [version]"{version}"',
+                    f"            if ($installed {op_ps} $target) {{ exit 0 }}",
+                    "        } catch {",
+                    "            if (Test-Path $p) { exit 0 }",
+                    "        }",
+                    "    }",
+                    "}",
+                    "exit 1",
+                ]
+                return "\n".join(lines) + "\n"
+
             return (
                 "$ErrorActionPreference = 'SilentlyContinue'\n"
                 f"if (Test-Path \"{path}\") {{ exit 0 }}\n"
                 "exit 1\n"
             )
+
         if best.type == "file_exists":
             return (
                 "$ErrorActionPreference = 'SilentlyContinue'\n"

@@ -121,7 +121,7 @@ You still must:
 
 ---
 
-## 4) Run a trace locally (produces InstallPlan + verified manifest)
+## 4) Run a trace locally (produces InstallPlan + trace contract + draft manifest)
 
 ### 4.1 Run command
 ```powershell
@@ -137,7 +137,9 @@ pkgprobe-trace run "C:\path\to\installer.exe" `
 
 Notes:
 - `--silent-args` is a list (default is `["/S"]`)
-- Use `--emit-manifest` to write `verified_manifest.json` into the output directory
+- Use `--emit-manifest` to write:
+  - `trace_contract.json` — portable **install plan + diff** for **api.pkgprobe.io** verification
+  - `verified_manifest.json` — **draft** preview (`draft: true`, `verification_authority: local_draft`); not authoritative for packaging
 - **Artifact flow:** After stopping ProcMon, the worker copies **PML to the host first**. Then either:
   - **Default:** export `trace.csv` **inside the guest**, then copy CSV to `--output`, or
   - **`--host-procmon`:** run `procmon.exe` **on the host** to convert the copied PML → CSV (same `/OpenLog` / `/SaveAs` style as guest export). If host export fails, the worker falls back to guest export.
@@ -168,22 +170,16 @@ If your guest tooling differs:
 
 ---
 
-## 5) Verified trace manifest (what “verified” means)
+## 5) Authoritative verification (api.pkgprobe.io) vs local draft (OSS)
 
-When `--emit-manifest` is enabled, `--output/verified_manifest.json` is written.
+**Local `pkgprobe-trace`** emits detection **candidates** in `verified_manifest.json` as a **draft** only. Eligibility scoring and “why pass/fail” diagnostics for production Intune workflows are applied **server-side** when the backend ingests `trace_contract.json` and overwrites `verified_manifest.json` on the worker before packaging.
 
-Packaging into `.intunewin` is **refused by default** unless the manifest is verified.
-Verification is strict and focuses on producing Intune-friendly detection.
-
-In this implementation, verification fails unless:
+Authoritative verification requires, among other rules:
 - a silent command (`silent_args`) is present
-- there is at least one **strong** detection anchor:
-  - **MSI ProductCode**-style `Uninstall\{GUID}` registry activity (manifest type `msi_product_code`, highest confidence), or
-  - **Uninstall registry key activity** (preferred; type `registry_key`), or
-  - **Program Files file activity** (acceptable)
-- the strongest anchor has confidence >= `0.85`
+- at least one **strong** detection anchor (MSI ProductCode-style uninstall path, Uninstall registry key, or Program Files file)
+- strongest anchor confidence >= `0.85` (unless weak-signal fallback is allowed by strictness)
 
-When not eligible, `verified_manifest.json` includes `verification_errors` explaining why.
+When not eligible, the **API-produced** manifest includes `verification_errors` explaining why.
 
 Detection script generation (`pack-intunewin`) treats `msi_product_code` like a registry key path for `Test-Path`/`HKLM:` normalization.
 
@@ -201,19 +197,23 @@ pkgprobe-trace pack-intunewin `
 
 This:
 1. Reads `verified_manifest.json` from the trace output directory
-2. Refuses to package unless `manifest.verified == true`
-3. Generates:
+2. Refuses to package **draft** OSS manifests (`draft: true`) unless `--allow-unverified` / `--community-pack`
+3. Refuses to package unless `manifest.verified == true` (authoritative manifests from the API trace flow)
+4. Generates:
    - `install.ps1`
    - `detect.ps1`
-4. Runs `IntuneWinAppUtil.exe` to produce:
+5. Runs `IntuneWinAppUtil.exe` to produce:
    - `<payload-installer-name>.intunewin`
 
-### 6.2 Allow packaging even if unverified (not recommended)
+### 6.2 Unsafe local packaging (`--allow-unverified` / `--community-pack`)
+
 ```powershell
 pkgprobe-trace pack-intunewin ... --allow-unverified
+# or
+pkgprobe-trace pack-intunewin ... --community-pack
 ```
 
-The backend does not pass this flag.
+The **api.pkgprobe.io** worker does not use these flags. Production `.intunewin` uses server-side verification only.
 
 ---
 
@@ -310,5 +310,10 @@ To make this replicable across cloud VM fleets:
 
 To run this in cloud later:
 - implement a cloud worker backend that replaces `pkgprobe-trace run` orchestration
-- keep the manifest + pack workflow identical
+- keep the **trace_contract → policy engine → verified_manifest → pack** workflow identical
+
+### Contract between worker and API
+
+- OSS worker writes **`trace_contract.json`** next to trace outputs.
+- **api.pkgprobe.io** reads it, runs **verification policy**, writes authoritative **`verified_manifest.json`**, then runs **`pack-intunewin`** (never `--allow-unverified`).
 

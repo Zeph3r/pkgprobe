@@ -50,6 +50,18 @@ _INSTALLSHIELD_BASE: list[tuple[str, float]] = [
     ("/qn", 0.3),
     ("/VERYSILENT", 0.2),
 ]
+_BURN_BASE: list[tuple[str, float]] = [
+    ("/quiet", 0.8),
+    ("/passive", 0.65),
+    ("/norestart", 0.5),
+    ("/silent", 0.4),
+]
+_SQUIRREL_BASE: list[tuple[str, float]] = [
+    ("--silent", 0.6),
+    ("-s", 0.5),
+    ("/S", 0.35),
+    ("/quiet", 0.3),
+]
 _GENERIC_EXE_BASE: list[tuple[str, float]] = [
     ("/S", 0.6),
     ("/silent", 0.5),
@@ -58,11 +70,12 @@ _GENERIC_EXE_BASE: list[tuple[str, float]] = [
     ("/VERYSILENT", 0.2),
 ]
 
-# Subtype boost: add evidence to primary switch only (weight = subtype_confidence * 0.2)
 _SUBTYPE_PRIMARY_SWITCH: dict[str, str] = {
     "nsis": "/S",
     "inno": "/VERYSILENT",
     "installshield": "/quiet",
+    "burn": "/quiet",
+    "squirrel": "--silent",
 }
 _SUBTYPE_BOOST_FACTOR = 0.2
 
@@ -70,7 +83,7 @@ _SUBTYPE_BOOST_FACTOR = 0.2
 def _build_candidates(
     base_list: list[tuple[str, float]],
     path: Path,
-    exe_subtype: Literal["nsis", "inno", "installshield"] | None,
+    exe_subtype: str | None,
     exe_subtype_confidence: float,
 ) -> list[_WeightedSwitchCandidate]:
     """Build weighted candidates with evidence; subtype and filename boosts applied."""
@@ -107,24 +120,40 @@ def _normalize_scores(candidates: list[_WeightedSwitchCandidate]) -> list[_Weigh
 def get_weighted_candidates(
     family: Literal["msi", "exe"],
     path: Path,
-    exe_subtype: Literal["nsis", "inno", "installshield"] | None,
+    exe_subtype: str | None,
     exe_subtype_confidence: float,
 ) -> list[str]:
     """
     Build weighted candidates, score, normalize to 0-1, sort descending by score.
     Returns list of switch strings for backward-compatible API.
     """
+    _SUBTYPE_BASE_MAP: dict[str, list[tuple[str, float]]] = {
+        "nsis": _NSIS_BASE,
+        "inno": _INNO_BASE,
+        "installshield": _INSTALLSHIELD_BASE,
+        "burn": _BURN_BASE,
+        "squirrel": _SQUIRREL_BASE,
+    }
+
     if family == "msi":
         base_list = _MSI_BASE
-    elif exe_subtype == "nsis":
-        base_list = _NSIS_BASE
-    elif exe_subtype == "inno":
-        base_list = _INNO_BASE
-    elif exe_subtype == "installshield":
-        base_list = _INSTALLSHIELD_BASE
     else:
-        base_list = _GENERIC_EXE_BASE
+        base_list = _SUBTYPE_BASE_MAP.get(exe_subtype or "", _GENERIC_EXE_BASE)
 
     candidates = _build_candidates(base_list, path, exe_subtype, exe_subtype_confidence)
     ordered = _normalize_scores(candidates)
-    return [c.switch for c in ordered]
+    result = [c.switch for c in ordered]
+
+    from pkgprobe.analyzers.telemetry import get_telemetry
+    tel = get_telemetry()
+    if tel.enabled:
+        tel.record(
+            "switch_candidates_selected",
+            family=family,
+            exe_subtype=exe_subtype,
+            exe_subtype_confidence=exe_subtype_confidence,
+            switches=result,
+            candidate_count=len(result),
+        )
+
+    return result

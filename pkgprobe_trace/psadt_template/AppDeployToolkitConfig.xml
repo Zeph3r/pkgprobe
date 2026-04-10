@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Minimal PSADT configuration for pkgprobe auto-wrap packaging.
+  Based on PowerShell App Deployment Toolkit (Apache License 2.0).
+-->
+<AppDeployToolkit_Config>
+  <Toolkit_Options>
+    <Toolkit_TempPath>$envTemp</Toolkit_TempPath>
+    <Toolkit_LogPath>$envWinDir\Logs\Software</Toolkit_LogPath>
+    <Toolkit_LogStyle>CMTrace</Toolkit_LogStyle>
+    <Toolkit_CompressLogs>false</Toolkit_CompressLogs>
+    <Toolkit_RequireAdmin>true</Toolkit_RequireAdmin>
+    <Toolkit_LogMaxSize>10</Toolkit_LogMaxSize>
+  </Toolkit_Options>
+  <UI_Options>
+    <InstallationUI_Timeout>6600</InstallationUI_Timeout>
+    <InstallationUI_ExitOnTimeout>true</InstallationUI_ExitOnTimeout>
+    <InstallationDefer_ExitOnDefer>false</InstallationDefer_ExitOnDefer>
+    <InstallationPrompt_PersistInterval>60</InstallationPrompt_PersistInterval>
+    <BalloonNotifications>true</BalloonNotifications>
+    <InstallationRestartPrompt_Timeout>600</InstallationRestartPrompt_Timeout>
+  </UI_Options>
+</AppDeployToolkit_Config>

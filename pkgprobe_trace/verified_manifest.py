@@ -35,6 +35,8 @@ class DetectionCandidate:
     value: str
     confidence: float = 0.5
     rationale: str = ""
+    version: str = ""
+    version_operator: str = ""  # "ge" | "eq" | "" (presence-only)
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,11 @@ class VerifiedTraceManifest:
     verified: bool = False
     verification_errors: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # draft=True: local OSS preview only; authoritative verification is api.pkgprobe.io
+    draft: bool = True
+    verification_authority: str = "local_draft"
+    product_version: str = ""
+    product_code: str = ""
 
     def to_json_dict(self) -> Dict[str, Any]:
         return {
@@ -58,6 +65,10 @@ class VerifiedTraceManifest:
             "verified": self.verified,
             "verification_errors": list(self.verification_errors),
             "notes": list(self.notes),
+            "draft": self.draft,
+            "verification_authority": self.verification_authority,
+            "product_version": self.product_version,
+            "product_code": self.product_code,
         }
 
     def to_json(self, *, indent: int = 2) -> str:
@@ -69,14 +80,23 @@ class VerifiedTraceManifest:
         candidates = [
             DetectionCandidate(**c) for c in (d.get("detection_candidates") or [])
         ]
+        verified = bool(d.get("verified", False))
+        if "draft" in d:
+            draft = bool(d.get("draft"))
+        else:
+            draft = not verified
         return cls(
             schema_version=d.get("schema_version", "v1"),
             installer_filename=d.get("installer_filename", ""),
             install_exe_name=d.get("install_exe_name", ""),
             silent_args=list(d.get("silent_args") or []),
             detection_candidates=candidates,
-            verified=bool(d.get("verified", False)),
+            verified=verified,
             verification_errors=list(d.get("verification_errors") or []),
             notes=list(d.get("notes") or []),
+            draft=draft,
+            verification_authority=str(d.get("verification_authority") or ("local_draft" if draft else "legacy_local")),
+            product_version=str(d.get("product_version") or ""),
+            product_code=str(d.get("product_code") or ""),
         )
 

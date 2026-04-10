@@ -27,6 +27,8 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from .diff_engine import DiffEngine
 from .installer_executor import InstallerExecutionConfig, InstallerExecutor
 from .procmon_controller import ProcmonConfig, ProcmonController
+from .procmon_tuning import parse_procmon_tuning
+from .psadt_wrapper import PsadtWrapperConfig
 from .trace_worker import TraceWorker, TraceWorkerConfig, TraceWorkerError
 from .vmware_controller import VMwareController, VMwareControllerConfig
 
@@ -59,7 +61,11 @@ def create_app(
         guest_installer_path: str,
         guest_pml_path: str,
         guest_csv_path: str,
+        procmon_profile: str,
+        procmon_tuning_json: str,
+        auto_wrap: bool = False,
     ) -> TraceWorker:
+        tuning = parse_procmon_tuning(procmon_profile, procmon_tuning_json)
         vmware = VMwareController(
             VMwareControllerConfig(
                 vmx_path=vmx_path,
@@ -72,13 +78,21 @@ def create_app(
         )
         procmon = ProcmonController(
             vmware,
-            ProcmonConfig(procmon_path=procmon_path, backing_pml=guest_pml_path),
+            ProcmonConfig(
+                procmon_path=procmon_path,
+                backing_pml=guest_pml_path,
+                profile=tuning.profile,
+                tuning_json=procmon_tuning_json,
+            ),
         )
         installer = InstallerExecutor(
             vmware,
             InstallerExecutionConfig(
                 guest_installer_path=guest_installer_path,
                 silent_args=silent_args,
+                timeout_sec=120,
+                installer_tail_wait_sec=600,
+                guest_diag_after_installer=True,
             ),
         )
         return TraceWorker(
@@ -87,6 +101,12 @@ def create_app(
             installer_executor=installer,
             diff_engine=DiffEngine(
                 installer_process_image=os.path.basename(guest_installer_path),
+                include_processes=tuning.include_processes,
+                exclude_processes=tuning.exclude_processes,
+                include_path_prefixes=tuning.include_path_prefixes,
+                exclude_path_prefixes=tuning.exclude_path_prefixes,
+                registry_only=tuning.registry_only,
+                strict_pid_tree=tuning.strict_pid_tree,
             ),
             config=TraceWorkerConfig(
                 host_output_dir=output_dir,
@@ -96,6 +116,12 @@ def create_app(
                 host_csv_name="trace.csv",
                 guest_tools_timeout_sec=guest_tools_timeout_sec,
                 boot_wait_sec=boot_wait_sec,
+                stuck_stage_timeout_sec=900.0,
+                trace_wall_clock_sec=0.0,
+                guest_installer_diag=True,
+                baseline_subtraction=tuning.baseline_subtraction,
+                auto_wrap=auto_wrap,
+                psadt_wrapper_config=PsadtWrapperConfig() if auto_wrap else None,
             ),
         )
 
@@ -109,6 +135,9 @@ def create_app(
         guest_installer_path: str = Form(r"C:\trace\installer.exe"),
         guest_pml_path: str = Form(r"C:\trace\logs\trace.pml"),
         guest_csv_path: str = Form(r"C:\trace\logs\trace.csv"),
+        procmon_profile: str = Form("balanced"),
+        procmon_tuning_json: str = Form(""),
+        auto_wrap: str = Form("false"),
     ):
         job_id = str(uuid.uuid4())
         job_dir = base_dir / job_id
@@ -123,6 +152,8 @@ def create_app(
         if not args_list:
             args_list = ["/S"]
 
+        wrap_enabled = auto_wrap.lower() in ("true", "1", "yes")
+
         worker = _make_worker(
             output_dir=str(job_dir),
             silent_args=args_list,
@@ -132,18 +163,35 @@ def create_app(
             guest_installer_path=guest_installer_path,
             guest_pml_path=guest_pml_path,
             guest_csv_path=guest_csv_path,
+            procmon_profile=procmon_profile,
+            procmon_tuning_json=procmon_tuning_json,
+            auto_wrap=wrap_enabled,
         )
 
-        install_cmd_display = f"{os.path.basename(host_installer_path)} " + " ".join(args_list)
+        installer_filename = os.path.basename(host_installer_path)
+        install_cmd_display = f"{installer_filename} " + " ".join(args_list)
+
         try:
-            plan = worker.run_trace(
-                host_installer_path=host_installer_path,
-                install_command_display=install_cmd_display.strip(),
-            )
+            if wrap_enabled:
+                plan, manifest, was_wrapped = worker.run_trace_with_wrapper_fallback(
+                    host_installer_path=host_installer_path,
+                    install_command_display=install_cmd_display.strip(),
+                    installer_filename=installer_filename,
+                    install_exe_name=installer_filename,
+                    silent_args=args_list,
+                )
+                result = plan.to_json_dict()
+                result["manifest"] = manifest.to_json_dict()
+                result["was_wrapped"] = was_wrapped
+                return result
+            else:
+                plan, _diff = worker.run_trace(
+                    host_installer_path=host_installer_path,
+                    install_command_display=install_cmd_display.strip(),
+                )
+                return plan.to_json_dict()
         except TraceWorkerError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-        return plan.to_json_dict()
 
     return app
 
