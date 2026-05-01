@@ -189,6 +189,11 @@ Optional flags (see [docs/TRACE-INTUNE.md](docs/TRACE-INTUNE.md)): for example
 `--baseline-csv` (subtract an idle trace), `--host-procmon` (export PML→CSV on
 the host), `--vmrun-retries`, `--pause-after`, `--guest-tools-timeout`.
 
+Successful VMware trace + Intune packaging run (wrapper-fallback with strong
+detection anchors):
+
+![VM trace to Intune package success](docs/images/vm-trace-intunewin-success.png)
+
 ------------------------------------------------------------------------
 
 ## Installation

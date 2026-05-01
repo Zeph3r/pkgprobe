@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Tuple
 
 from .diff_engine import DiffEngine, DiffResult
-from .installer_executor import InstallerExecutor, InstallerExecutorError
+from .installer_executor import InstallerExecutor, InstallerExecutorError, InstallerUIBlockedError
 from .installplan_generator import InstallPlan
 from .manifest_builder import build_draft_manifest, collect_detection_candidates
 from .trace_contract import write_trace_contract_file
@@ -150,6 +150,10 @@ class TraceWorker:
             logger.info("Extra boot wait: %ss", self._config.boot_wait_sec)
             time.sleep(self._config.boot_wait_sec)
 
+        logger.info("Probing guest command execution via VMware Tools")
+        self._vmware.preflight_guest_command_access(timeout_sec=30)
+        tracker.touch()
+
         tracker.set_stage(STAGE_UPLOADING)
         logger.info("Uploading installer")
         self._installer_executor.upload_installer(host_installer_path)
@@ -176,6 +180,11 @@ class TraceWorker:
             logger.info("Running installer")
             try:
                 self._installer_executor.run_installer_silent()
+            except InstallerUIBlockedError:
+                logger.warning(
+                    "Installer displayed a GUI window — silent switch is ineffective for this EXE"
+                )
+                raise
             except InstallerExecutorError:
                 raise
             except Exception as exc:
@@ -405,6 +414,12 @@ class TraceWorker:
                     install_command_display=install_command_display,
                     tracker=tracker,
                 )
+            except InstallerUIBlockedError as exc:
+                installer_error = exc
+                logger.warning(
+                    "Installer showed a GUI window (silent switch ineffective); "
+                    "checking wrapper fallback"
+                )
             except InstallerExecutorError as exc:
                 installer_error = exc
                 logger.warning(
@@ -459,6 +474,7 @@ class TraceWorker:
                 product_name=product_name or installer_filename,
                 installer_type=installer_type,
                 detection_candidates=candidates,
+                silent_args=list(silent_args) if silent_args else None,
             )
 
             tracker.set_stage(STAGE_VERIFYING_WRAPPER)
@@ -484,16 +500,40 @@ class TraceWorker:
                     install_command=f"Deploy-Application.ps1 (PSADT wrapper for {installer_filename})",
                     diff=diff if diff is not None else DiffResult(files=[], registry=[], services=[], scheduled_tasks=[]),
                 )
+            contract_diff = diff if diff is not None else DiffResult(
+                files=[], registry=[], services=[], scheduled_tasks=[]
+            )
+            wrapper_discovered_candidates = [
+                {
+                    "type": str(c.type),
+                    "value": str(c.value),
+                    "confidence": float(c.confidence),
+                    "rationale": str(c.rationale),
+                }
+                for c in vresult.discovered_candidates
+            ]
+            write_trace_contract_file(
+                self._config.host_output_dir,
+                install_plan_dict=plan.to_json_dict(),
+                diff_dict=contract_diff.to_json_dict(),
+                installer_filename=installer_filename,
+                install_exe_name="Deploy-Application.ps1",
+                silent_args=list(silent_args or []),
+                verification_strictness=self._config.verification_strictness,
+                wrapper_discovered_candidates=wrapper_discovered_candidates,
+            )
 
+            wrapper_silent = list(silent_args) if silent_args else []
+            all_candidates = candidates + list(vresult.discovered_candidates)
             manifest = VerifiedTraceManifest(
                 installer_filename=installer_filename,
                 install_exe_name="Deploy-Application.ps1",
-                silent_args=[],
-                detection_candidates=candidates,
+                silent_args=wrapper_silent,
+                detection_candidates=all_candidates,
                 verified=True,
                 verification_errors=[],
                 notes=[
-                    "Installed via PSADT wrapper (GUI-mode); silent args not used.",
+                    f"Installed via PSADT wrapper; silent args: {wrapper_silent or 'none'}.",
                     f"Wrapper verification: {vresult.summary()}",
                 ],
                 draft=False,

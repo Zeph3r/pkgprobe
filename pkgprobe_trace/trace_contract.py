@@ -19,6 +19,7 @@ def write_trace_contract_file(
     install_exe_name: str,
     silent_args: list[str],
     verification_strictness: str,
+    wrapper_discovered_candidates: list[dict[str, Any]] | None = None,
 ) -> Path:
     out = Path(host_output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -32,5 +33,8 @@ def write_trace_contract_file(
         "install_plan": install_plan_dict,
         "diff": diff_dict,
     }
+    # Optional in v1 for wrapper-fallback traces where procmon diff is sparse.
+    if wrapper_discovered_candidates:
+        payload["wrapper_discovered_candidates"] = list(wrapper_discovered_candidates)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     return path
