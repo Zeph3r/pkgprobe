@@ -1,4 +1,13 @@
-## pkgprobe
+# pkgprobe
+
+> Windows installer intelligence for endpoint teams — static analysis, deployment assessment, and optional VM trace packaging.
+
+[![PyPI version](https://img.shields.io/pypi/v/pkgprobe?color=4f46e5&style=flat-square)](https://pypi.org/project/pkgprobe/)
+[![Python versions](https://img.shields.io/pypi/pyversions/pkgprobe?style=flat-square&color=4f46e5)](https://pypi.org/project/pkgprobe/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-gray?style=flat-square)](LICENSE)
+[![Docs: usage](https://img.shields.io/badge/docs-usage-blue?style=flat-square)](docs/USAGE.md)
+[![Docs: trace + intune](https://img.shields.io/badge/docs-trace%20%2B%20intune-blue?style=flat-square)](docs/TRACE-INTUNE.md)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078d4?style=flat-square&logo=windows)](https://pypi.org/project/pkgprobe/)
 
 
 **pkgprobe** is a Windows installer intelligence toolkit for endpoint teams.
